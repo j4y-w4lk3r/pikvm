@@ -1,0 +1,22 @@
+# Environment and credentials
+.env
+
+# Build artifacts
+pikvm
+
+# Log files
+*.log
+upload_progress.log
+upload.pid
+
+# Temporary files
+*.tmp
+nohup.out
+
+# ISO files (large binaries)
+iso/
+*.iso
+
+# PXE generated files
+pxe/files/
+
