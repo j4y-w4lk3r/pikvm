@@ -1,0 +1,14 @@
+A few things to check on the ASUS BIOS:
+
+Most likely culprits:
+
+1. Secure Boot — must be Disabled. Go to: Boot → Secure Boot → OS Type → Other OS (or Secure Boot State → Disabled)
+2. Fast Boot — must be Disabled. Fast Boot skips USB detection entirely. Go to: Boot → Fast Boot → Disabled
+3. CSM — should be Disabled for UEFI-only Arch boot
+4. USB port — try a rear USB 2.0 port (not USB 3.0/Type-C). Some BIOS won't detect boot devices on front panel or USB 3.x ports during POST.
+
+After changing those settings:
+•  Save & Exit BIOS
+•  Reboot and press F8 for the one-time boot menu (not the boot priority list in BIOS setup — F8 is more reliable for detecting USB)
+
+If it still doesn't appear, plug the USB back into your Mac and I can verify the partition table was written correctly.
