@@ -391,7 +391,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if err != nil {
 								m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
 							} else if len(entries) == 0 {
-								m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./iso.sh --upload /path/to/file.iso"
+								m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
 							} else {
 								m.selectingISO = true
 								m.availableISOEntries = entries
@@ -431,7 +431,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
 					} else if len(entries) == 0 {
-						m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./iso.sh --upload /path/to/file.iso"
+						m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
 					} else {
 						m.selectingISO = true
 						m.availableISOEntries = entries
@@ -852,7 +852,7 @@ func viewVideoStream(port int) string {
 	return fmt.Sprintf("\uf00c Opening PiKVM in browser (video set to port %d).\n  Log in if prompted, then watch the stream.", port+1)
 }
 
-// viewVideoMpv opens the PiKVM HDMI stream in ffplay/mpv. On macOS we run test_stream.sh in a new
+// viewVideoMpv opens the PiKVM HDMI stream in ffplay/mpv. On macOS we run pikvm.sh --stream in a new
 // Terminal window so the pipeline gets a real TTY (avoids websocat "Invalid argument" when run from TUI).
 // On Linux/Windows we run the pipeline in-process. Raw H.264 needs -probesize/-analyzeduration so the player
 // doesn't fail on "unspecified size" before the first keyframe.
@@ -872,23 +872,23 @@ func viewVideoMpv(port int) string {
 
 	execPath, _ := os.Executable()
 	scriptDir := filepath.Dir(execPath)
-	if _, err := os.Stat(filepath.Join(scriptDir, "test_stream.sh")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(scriptDir, "pikvm.sh")); os.IsNotExist(err) {
 		scriptDir = "."
 	}
-	scriptPath := filepath.Join(scriptDir, "test_stream.sh")
+	scriptPath := filepath.Join(scriptDir, "pikvm.sh")
 	absScript, _ := filepath.Abs(scriptPath)
 
 	if runtime.GOOS == "darwin" {
-		// Run in new Terminal window so websocat gets a real TTY and the same env as when you run ./test_stream.sh
-		runInTerminal := fmt.Sprintf("cd %s && ./test_stream.sh", quotedPath(filepath.Dir(absScript)))
+		// Run in new Terminal window so websocat gets a real TTY and the same env as when you run ./pikvm.sh --stream
+		runInTerminal := fmt.Sprintf("cd %s && ./pikvm.sh --stream", quotedPath(filepath.Dir(absScript)))
 		cmd := exec.Command("osascript", "-e", "tell application \"Terminal\" to do script "+quotedAppleScript(runInTerminal))
 		if err := cmd.Run(); err != nil {
-			return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in terminal instead: cd %s && ./test_stream.sh", err, scriptDir)
+			return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in terminal instead: cd %s && ./pikvm.sh --stream", err, scriptDir)
 		}
 		return fmt.Sprintf("\uf00c Opened stream in a new Terminal window (port %d). Close the window when done.", port+1)
 	}
 
-	// Linux/Windows: run pipeline in-process (may hit websocat EINVAL on some setups; then use test_stream.sh in a terminal)
+	// Linux/Windows: run pipeline in-process (may hit websocat EINVAL on some setups; then use pikvm.sh --stream in a terminal)
 	useFfplay := false
 	if _, err := exec.LookPath("ffplay"); err == nil {
 		useFfplay = true
@@ -1091,16 +1091,16 @@ func bootFromISOEntry(port int, entry isoEntry) string {
 	if entry.LocalPath != "" {
 		execPath, _ := os.Executable()
 		scriptDir := filepath.Dir(execPath)
-		if _, err := os.Stat(filepath.Join(scriptDir, "iso.sh")); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(scriptDir, "pikvm.sh")); os.IsNotExist(err) {
 			scriptDir = "."
 		}
 		absDir, _ := filepath.Abs(scriptDir)
-		uploadCmd := fmt.Sprintf("cd %s && ./iso.sh --upload %s", quotedBash(absDir), quotedBash(entry.LocalPath))
+		uploadCmd := fmt.Sprintf("cd %s && ./pikvm.sh --iso --upload %s", quotedBash(absDir), quotedBash(entry.LocalPath))
 
 		if runtime.GOOS == "darwin" {
 			cmd := exec.Command("osascript", "-e", "tell application \"Terminal\" to do script "+quotedAppleScript(uploadCmd))
 			if err := cmd.Run(); err != nil {
-				return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in another terminal: ./iso.sh --upload %s", err, entry.LocalPath)
+				return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in another terminal: ./pikvm.sh --iso --upload %s", err, entry.LocalPath)
 			}
 			return fmt.Sprintf("\uf00c Upload started in new Terminal window.\n  When it finishes, run Boot from ISO (1) again and select %s to boot.", entry.Name)
 		}
@@ -1125,7 +1125,7 @@ func bootFromISOEntry(port int, entry isoEntry) string {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Sprintf("\uf057 Upload failed: %v\n  Run manually: ./iso.sh --upload %s", err, entry.LocalPath)
+			return fmt.Sprintf("\uf057 Upload failed: %v\n  Run manually: ./pikvm.sh --iso --upload %s", err, entry.LocalPath)
 		}
 	}
 	return bootFromSpecificISO(port, entry.Name)

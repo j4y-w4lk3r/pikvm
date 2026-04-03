@@ -1,0 +1,6 @@
+# Python helpers (pikvm.py)
+requests>=2.28.0
+Pillow>=9.0.0
+pyautogui>=0.9.54
+# Optional: template matching with --confidence for pikvm.py automate
+opencv-python>=4.5.0

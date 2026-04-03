@@ -51,9 +51,10 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 ### Building
 
 ```bash
-./build.sh              # Build the binary
-./build.sh --test       # Test .env configuration
-./build.sh --help       # Show build options
+./pikvm.sh --build           # Build the Go binary
+./pikvm.sh --build --test    # Test .env configuration
+./pikvm.sh --build --help    # Show build options
+./pikvm.sh --help            # All shell commands (build / iso / stream)
 ```
 
 ### Usage
@@ -94,6 +95,55 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 # Reset button long press
 ./pikvm reset-long
 ```
+
+#### Shell helpers (`pikvm.sh`)
+
+```bash
+./pikvm.sh --iso --list      # ISO / MSD (same as old iso.sh)
+./pikvm.sh --stream          # H.264 stream test (optional port: ./pikvm.sh --stream 2)
+./pikvm.sh --build           # Compile the Go TUI
+```
+
+#### Local screen automation (`pikvm.py automate`)
+
+Put PNG template crops in `images/`, focus the PiKVM browser window, then:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python3 pikvm.py automate --image my_button.png --text "hello world"
+```
+
+The repo includes `requirements.txt` (requests, Pillow, pyautogui, opencv-python). A local **`.venv/`** is gitignored; use it so `python3` is not the bare system interpreter without those packages.
+
+This polls the **local** display until the template appears, optionally clicks it, then types the text. For fuzzy matching add `--confidence 0.85` (requires `opencv-python`). On macOS, grant **Accessibility** to Terminal or your IDE so PyAutoGUI can send keystrokes.
+
+#### PiKVM API screenshots (`pikvm.py capture`)
+
+Saves JPEGs from PiKVM’s HTTP snapshot API (active **switch port**, same 0-based index as the TUI). By default uses **port 2**, **every 1s**, into `./images` (no extra Python deps beyond the stdlib; needs **websocat** unless something else is already keeping the stream alive):
+
+```bash
+python3 pikvm.py capture
+python3 pikvm.py capture --port 2 --interval 1 --output-dir /Users/wgm0/px/pikvm/images
+python3 pikvm.py capture --duration 60 --no-keeper   # stream already open in browser
+```
+
+By default, **`switch/set_active` runs before every snapshot** so the HDMI mux stays on the requested port (helps avoid “wrong port” frames). Tune with `--settle`, `--warmup`, or `--no-reassert-port` if your PiKVM is slow or you see flicker. Use `-v` to print a snippet of `GET /api/switch` once for debugging.
+
+#### Multi-step GUI scripts (`pikvm.py run-sequence`)
+
+Declarative JSON under `seq-script/` (see `seq-script/FORMAT.txt`). Example:
+
+```bash
+python3 pikvm.py run-sequence seq-script/port2-alarm.json
+```
+
+- **`wait_image_pikvm`** — OpenCV template match on **PiKVM’s HTTP snapshot** for a given **switch port** (see JSON `pikvm_port`). This is the right choice when you care about **port 2’s video**, not a macOS screenshot (PyAutoGUI’s `wait_image` needs **Screen Recording** permission and only sees your **local** display).
+- **`wait_image`** — PyAutoGUI on the **Mac** screen only.
+- **`type` / `write`, `key` / `press`, `sleep`** — still use PyAutoGUI for keyboard input; **focus the PiKVM browser tab** so keys go to the guest.
+
+Optional flags: `--pikvm-port`, `--no-stream-keeper`, `--warmup`, `--snapshot-quality`, `-v` / `--verbose` (or `PIKVM_VERBOSE=1`) to log every `set_active`, match scores, and `GET /api/switch` JSON. API ports are **0-based**; the web UI label is often **one higher** (API `2` → UI “Port 3”).
 
 ---
 
@@ -170,13 +220,12 @@ ISO_PATH=/path/to/iso         # Default ISO path
 
 **Scripts that use `.env`:**
 - ✅ `pikvm` (Go binary) - Main TUI & CLI commands
-- ✅ `pikvm_control.py` (Python) - Alternative TUI
-- ✅ `iso.sh` (Bash) - ISO manager
-- ✅ `build.sh` (Bash) - Build & test
+- ✅ `pikvm.py` (Python) - ATX TUI, ISO upload, local GUI automation (`automate` with PyAutoGUI)
+- ✅ `pikvm.sh` (Bash) - Build, ISO manager, video stream test (`--build`, `--iso`, `--stream`)
 
 **Test configuration:**
 ```bash
-./build.sh --test    # Verify all scripts load .env correctly
+./pikvm.sh --build --test    # Verify .env and tools
 ```
 
 **Other settings:**
@@ -293,29 +342,29 @@ The **easiest and most reliable** method:
 
 ```bash
 # List ISOs on PiKVM
-./iso.sh --list
+./pikvm.sh --iso --list
 
 # Test the API (small files only)
-./iso.sh --test
+./pikvm.sh --iso --test
 
 # Upload small ISO (<1GB)
-./iso.sh --upload /path/to/small.iso
+./pikvm.sh --iso --upload /path/to/small.iso
 
 # For large files: Script will warn and recommend web interface
-./iso.sh --upload /path/to/large.iso
+./pikvm.sh --iso --upload /path/to/large.iso
 ```
 
 #### 📋 **Available Commands**
 
 | Command | Description | Works For |
 |---------|-------------|-----------|
-| `./iso.sh --help` | Show all options | All |
-| `./iso.sh --list` | List ISOs + storage info | All |
-| `./iso.sh --storage` | Show storage space | All |
-| `./iso.sh --delete <name>` | Delete an ISO | All |
-| `./iso.sh --test` | Test API with 1MB file | Small files |
-| `./iso.sh --upload <file>` | Upload ISO via API | Files <1GB |
-| `./iso.sh --scp <file>` | Upload via SCP | All (needs SSH) |
+| `./pikvm.sh --iso --help` | Show all options | All |
+| `./pikvm.sh --iso --list` | List ISOs + storage info | All |
+| `./pikvm.sh --iso --storage` | Show storage space | All |
+| `./pikvm.sh --iso --delete <name>` | Delete an ISO | All |
+| `./pikvm.sh --iso --test` | Test API with 1MB file | Small files |
+| `./pikvm.sh --iso --upload <file>` | Upload ISO via API | Files <1GB |
+| `./pikvm.sh --iso --scp <file>` | Upload via SCP | All (needs SSH) |
 
 ---
 
@@ -337,7 +386,7 @@ Once you have ISOs on your PiKVM:
 
 1. **Verify ISO is uploaded:**
    ```bash
-   ./iso.sh --list
+   ./pikvm.sh --iso --list
    ```
 
 2. **Launch the TUI:**
@@ -522,7 +571,7 @@ func bootPXE(port int) string {
 ### Rebuild After Adding Scripts
 
 ```bash
-./build.sh
+./pikvm.sh --build
 # or
 go build -o pikvm pikvm.go
 ```

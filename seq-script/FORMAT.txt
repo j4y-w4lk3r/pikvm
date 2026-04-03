@@ -1,0 +1,68 @@
+PiKVM GUI sequences (JSON)
+==========================
+
+Run:
+  python3 pikvm.py run-sequence seq-script/your.json
+
+Top level: either a JSON array of steps, or { "steps": [ ... ] }.
+
+Paths in wait_image are relative to the repo root (directory that contains pikvm.py),
+unless you use an absolute path.
+
+Top-level JSON (optional, when using an object with "steps"):
+
+  "pikvm_port": 2
+  "stream_keeper": true
+  "warmup": 5
+  "verbose": true
+  "input": "auto" | "pikvm" | "local"
+      auto (default): if any step uses wait_image_pikvm, type/key use PiKVM HID
+      (POST /api/hid/print and /api/hid/events/send_key — same as Go testKeyboard).
+      Otherwise type/key use PyAutoGUI on your Mac. Override with CLI: --input pikvm|local.
+
+KVMD API: set_active?port uses 0-based index. GET /api/switch → result.summary.active_id
+is the UI port label (single-unit: "1".."4" for API 0..3). See seq-script/PORT-NUMBERING.txt.
+
+Debug: python3 pikvm.py run-sequence -v …  or  PIKVM_VERBOSE=1  or  "verbose": true in JSON.
+
+wait_image_pikvm — match template against PiKVM’s JPEG snapshot API (correct switch port;
+not your Mac screenshot — avoids macOS Screen Recording issues):
+
+  {
+    "wait_image_pikvm": "images/ref.jpg",
+    "port": 2,
+    "timeout": 600,
+    "interval": 1.0,
+    "settle": 0.35,
+    "threshold": 0.82,
+    "quality": 95
+  }
+
+  threshold: OpenCV matchTemplate max score 0..1 (lower if match is flaky, e.g. 0.72).
+  Requires: opencv-python, websocat in PATH (or stream_keeper false + browser already open).
+
+Step objects (one action per object):
+
+1) wait_image  — PyAutoGUI template match on the LOCAL Mac screen only
+   {
+     "wait_image": "images/foo.png",
+     "timeout": 600,
+     "interval": 0.5,
+     "confidence": 0.85,
+     "click": false,
+     "after_match": 0.2
+   }
+   confidence: optional; requires opencv-python.
+
+2) type / write — keyboard text
+   { "type": "alarm" }
+   Optional per-step: "type_interval": 0.05
+
+3) key / press — single key
+   { "key": "enter" }
+
+4) sleep
+   { "sleep": 1.5 }
+
+Tip: capture reference JPEGs with `pikvm.py capture --port N ...` then point wait_image
+at those files. Resolution and UI must match what is on screen when the sequence runs.

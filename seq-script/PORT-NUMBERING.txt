@@ -1,0 +1,19 @@
+PiKVM switch numbering (KVMD HTTP API)
+======================================
+
+The query parameter set_active?port=N uses a 0-based **active_port** index.
+
+On a single switch unit, the web UI label matches **active_id** from GET /api/switch:
+
+  API set_active?port=0  →  summary.active_id "1"  (UI Port 1)
+  API set_active?port=1  →  summary.active_id "2"  (UI Port 2)
+  API set_active?port=2  →  summary.active_id "3"  (UI Port 3)
+  API set_active?port=3  →  summary.active_id "4"  (UI Port 4)
+
+Run with verbose to print summary after each POST:
+
+  PIKVM_VERBOSE=1 python3 pikvm.py run-sequence seq-script/port2-alarm.json
+
+Or: python3 pikvm.py run-sequence -v ...
+
+Default in port2-alarm.json is pikvm_port 1 so video matches **UI Port 2**.

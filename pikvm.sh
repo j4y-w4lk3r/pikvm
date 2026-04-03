@@ -1,21 +1,245 @@
-#!/bin/bash
-
-# PiKVM ISO Manager - All-in-one ISO management tool
-# Usage: ./iso.sh [command] [options]
+#!/usr/bin/env bash
+#
+# PiKVM unified shell tools (former build.sh, iso.sh, test_stream.sh)
+#   ./pikvm.sh --build [--test|--help]
+#   ./pikvm.sh --iso   [--list|--upload|...]   (same as old iso.sh)
+#   ./pikvm.sh --stream [port]                 (H.264 test; optional 0-based port)
+#
 
 set -e
 
-# Load environment variables
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+ME="$SCRIPT_DIR/$(basename "$0")"
+
+# =============================================================================
+# Build (Go binary) — former build.sh
+# =============================================================================
+
+show_build_help() {
+    cat << EOF
+PiKVM Build
+
+Usage: $ME --build [options]
+
+Options:
+  (no extra args)  Ensure .env (Vault if missing), set up .venv, then build ./pikvm
+  --help, -h       This help
+  --test, -t       Test .env and tools
+
+First-time: if .env is missing, runs scripts/env-from-vault.sh (needs vault, jq, VAULT_ADDR).
+
+Examples:
+  $ME --build
+  $ME --build --test
+
+EOF
+}
+
+ensure_build_env() {
+    if [ -f .env ]; then
+        return 0
+    fi
+
+    echo "📋 No .env found; trying HashiCorp Vault (scripts/env-from-vault.sh)..."
+
+    if ! command -v vault >/dev/null 2>&1; then
+        echo "❌ vault CLI not found. Install: https://developer.hashicorp.com/vault/install"
+        echo "   Or copy/create a .env file in this directory."
+        exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "❌ jq not found. Install jq, then re-run."
+        exit 1
+    fi
+    if [ -z "${VAULT_ADDR:-}" ]; then
+        echo "❌ VAULT_ADDR is not set."
+        echo "   Example: export VAULT_ADDR='http://your-vault-host:8200'"
+        exit 1
+    fi
+
+    if ! ./scripts/env-from-vault.sh; then
+        exit 1
+    fi
+    echo ""
+}
+
+ensure_python_venv() {
+    # Only relevant for the Python helper scripts (pikvm.py / automation).
+    if [ -d ".venv" ] && [ -x ".venv/bin/python" ]; then
+        return 0
+    fi
+
+    if [ ! -f "requirements.txt" ]; then
+        echo "⚠️  requirements.txt not found; skipping venv setup."
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "❌ python3 not found. Install Python 3, then re-run."
+        exit 1
+    fi
+
+    echo "📦 Creating Python virtualenv (.venv) and installing requirements..."
+    python3 -m venv .venv
+
+    if [ ! -x ".venv/bin/pip" ]; then
+        echo "❌ .venv/bin/pip missing after venv creation."
+        echo "   Try: python3 -m ensurepip --upgrade"
+        exit 1
+    fi
+
+    .venv/bin/pip install --upgrade pip setuptools wheel
+    .venv/bin/pip install -r requirements.txt
+}
+
+test_build_env() {
+    ensure_build_env
+    ensure_python_venv
+    echo "🧪 Testing .env configuration..."
+    echo ""
+
+    echo "✅ .env file exists"
+
+    if [ -f ./pikvm ]; then
+        if ./pikvm help > /dev/null 2>&1; then
+            echo "✅ pikvm binary loads .env correctly"
+        else
+            echo "❌ pikvm binary failed"
+        fi
+    else
+        echo "⚠️  pikvm binary not built yet (run $ME --build)"
+    fi
+
+    if "$ME" --iso --help > /dev/null 2>&1; then
+        echo "✅ pikvm.sh --iso loads .env correctly"
+    else
+        echo "❌ pikvm.sh --iso failed"
+    fi
+
+    echo ""
+    echo "✅ Configuration test complete!"
+}
+
+build_go_binary() {
+    ensure_build_env
+    ensure_python_venv
+
+    echo "🔧 Building PiKVM control tool..."
+
+    if [ ! -f "go.sum" ]; then
+        echo "📦 Downloading dependencies..."
+        go mod download
+    fi
+
+    echo "🔨 Compiling..."
+    go build -o pikvm pikvm.go
+
+    if [ $? -eq 0 ]; then
+        chmod +x pikvm
+        echo "✅ Build successful!"
+        echo ""
+        echo "Run with: ./pikvm"
+        echo "Or install to PATH: sudo cp pikvm /usr/local/bin/"
+    else
+        echo "❌ Build failed"
+        exit 1
+    fi
+}
+
+build_dispatch() {
+    case "${1:-}" in
+        --help|-h)
+            show_build_help
+            ;;
+        --test|-t)
+            test_build_env
+            ;;
+        "")
+            build_go_binary
+            ;;
+        *)
+            echo "❌ Unknown --build option: $1"
+            echo ""
+            show_build_help
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Video stream test — former test_stream.sh
+# =============================================================================
+
+stream_main() {
+    if [[ ! -f .env ]]; then
+        echo "Missing .env. Create it with PIKVM_HOST=, PIKVM_USER=, PIKVM_PASS="
+        exit 1
+    fi
+    set -a
+    source .env
+    set +a
+
+    for key in PIKVM_HOST PIKVM_USER PIKVM_PASS; do
+        if [[ -z ${!key} ]]; then
+            echo "Missing $key in .env"
+            exit 1
+        fi
+    done
+
+    if ! command -v websocat &>/dev/null; then
+        echo "websocat not found. Install: brew install websocat"
+        exit 1
+    fi
+
+    PLAYER=""
+    if command -v ffplay &>/dev/null; then
+        PLAYER="ffplay"
+    elif command -v mpv &>/dev/null; then
+        PLAYER="mpv"
+    else
+        echo "Need ffplay or mpv. Install: brew install ffmpeg  or  brew install mpv"
+        exit 1
+    fi
+
+    if [[ -n "$1" && "$1" =~ ^[0-9]+$ ]]; then
+        PORT="$1"
+        echo "Setting PiKVM active port to $PORT..."
+        curl -sS -k -X POST -u "${PIKVM_USER}:${PIKVM_PASS}" \
+            "https://${PIKVM_HOST}/api/switch/set_active?port=${PORT}" >/dev/null || true
+        sleep 0.5
+    fi
+
+    WS_MEDIA_URL="wss://${PIKVM_HOST}/api/media/ws?video=h264"
+    KEEPER_URL="wss://${PIKVM_HOST}/api/ws?stream=1"
+
+    echo "Starting stream keeper (api/ws?stream=1)..."
+    websocat -k "$KEEPER_URL" \
+        -H "X-KVMD-User: $PIKVM_USER" \
+        -H "X-KVMD-Passwd: $PIKVM_PASS" &
+    KEEPER_PID=$!
+    trap 'kill $KEEPER_PID 2>/dev/null' EXIT
+
+    sleep 2
+    echo "Connecting to media stream and opening $PLAYER (Ctrl+C to stop)..."
+    if [[ "$PLAYER" == "ffplay" ]]; then
+        websocat -b -B10000000 -k "$WS_MEDIA_URL" \
+            -H "X-KVMD-User: $PIKVM_USER" \
+            -H "X-KVMD-Passwd: $PIKVM_PASS" \
+        | ffplay -f h264 -framerate 30 -probesize 10M -analyzeduration 5M -fflags nobuffer -flags low_delay -i pipe:0 -window_title PiKVM
+    else
+        websocat -b -B10000000 -k "$WS_MEDIA_URL" \
+            -H "X-KVMD-User: $PIKVM_USER" \
+            -H "X-KVMD-Passwd: $PIKVM_PASS" \
+        | mpv --no-cache --demuxer-lavf-format=h264 --demuxer-lavf-o=probesize=10000000,analyzeduration=5000000 -
+    fi
+}
+
+# =============================================================================
+# ISO manager — former iso.sh (.env sourced inside iso_main)
+# =============================================================================
+
 ENV_FILE="$SCRIPT_DIR/.env"
-
-if [ ! -f "$ENV_FILE" ]; then
-    echo "❌ Error: .env file not found at $ENV_FILE"
-    exit 1
-fi
-
-# Source .env file
-source "$ENV_FILE"
 
 # Colors
 RED='\033[0;31m'
@@ -24,14 +248,14 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Show help
-show_help() {
+# ISO help
+iso_show_help() {
     cat << EOF
 ╔════════════════════════════════════════════════════════════════╗
 ║              PiKVM ISO Manager - Help                          ║
 ╚════════════════════════════════════════════════════════════════╝
 
-Usage: ./iso.sh [command] [options]
+Usage: ./pikvm.sh --iso [command] [options]
 
 Commands:
   --help, -h           Show this help message
@@ -43,13 +267,13 @@ Commands:
   --scp                Upload ISO via SCP (requires SSH)
 
 Examples:
-  ./iso.sh --list                           # List available ISOs
-  ./iso.sh --storage                        # Show storage space
-  ./iso.sh --test                           # Test API (recommended first)
-  ./iso.sh --upload                         # Upload default ISO (auto-detects method)
-  ./iso.sh --upload /path/to/large.iso      # Upload large file (uses Python streaming)
-  ./iso.sh --delete "test.iso"              # Delete an ISO
-  ./iso.sh --scp /path/to/file.iso          # Upload via SCP
+  ./pikvm.sh --iso --list                           # List available ISOs
+  ./pikvm.sh --iso --storage                        # Show storage space
+  ./pikvm.sh --iso --test                           # Test API (recommended first)
+  ./pikvm.sh --iso --upload                         # Upload default ISO (auto-detects method)
+  ./pikvm.sh --iso --upload /path/to/large.iso      # Upload large file (uses Python streaming)
+  ./pikvm.sh --iso --delete "test.iso"              # Delete an ISO
+  ./pikvm.sh --iso --scp /path/to/file.iso          # Upload via SCP
 
 Configuration:
   Settings are stored in .env file:
@@ -144,7 +368,7 @@ test_api() {
     # Check result
     if echo "$RESPONSE" | grep -q '"ok": true'; then
         echo -e "${GREEN}✅ SUCCESS! The API works!${NC}"
-        echo "   You can now upload the full ISO with: ./iso.sh --upload"
+        echo "   You can now upload the full ISO with: ./pikvm.sh --iso --upload"
         return 0
     else
         echo -e "${RED}❌ Test failed${NC}"
@@ -196,14 +420,14 @@ upload_iso() {
         
         # Check if Python uploader exists
         SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        if [ ! -f "$SCRIPT_DIR/upload_iso_builtin.py" ]; then
+        if [ ! -f "$SCRIPT_DIR/pikvm.py" ]; then
             echo -e "${RED}✗ Python uploader not found!${NC}"
-            echo "  Expected: $SCRIPT_DIR/upload_iso_builtin.py"
+            echo "  Expected: $SCRIPT_DIR/pikvm.py"
             exit 1
         fi
         
-        # Use Python streaming uploader for large files
-        python3 "$SCRIPT_DIR/upload_iso_builtin.py" "$ISO_FILE"
+        # Use Python streaming uploader for large files (stdlib)
+        python3 "$SCRIPT_DIR/pikvm.py" upload-builtin "$ISO_FILE"
         exit $?
     fi
     
@@ -398,7 +622,7 @@ upload_iso() {
         echo "════════════════════════════════════════════════════════════════"
         echo ""
         echo "  Next steps:"
-        echo "  1. Verify: ./iso.sh --list"
+        echo "  1. Verify: ./pikvm.sh --iso --list"
         echo "  2. Boot: ./pikvm"
         echo "  3. Select: [1] Boot Ubuntu ISO"
         echo ""
@@ -434,7 +658,7 @@ upload_background() {
     > "$LOG_FILE"
     
     # Run in background
-    nohup bash -c "$0 --upload \"$ISO_FILE\"" >> "$LOG_FILE" 2>&1 &
+    nohup bash -c "\"$ME\" --iso --upload \"$ISO_FILE\"" >> "$LOG_FILE" 2>&1 &
     UPLOAD_PID=$!
     
     echo "$UPLOAD_PID" > "$PID_FILE"
@@ -505,7 +729,7 @@ upload_scp() {
         echo -e "${GREEN}✅ Upload successful!${NC}"
         echo ""
         echo "  Next steps:"
-        echo "  1. Verify: ./iso.sh --list"
+        echo "  1. Verify: ./pikvm.sh --iso --list"
         echo "  2. Boot: ./pikvm"
         echo "  3. Select: [1] Boot Ubuntu ISO"
         echo ""
@@ -522,7 +746,7 @@ delete_iso() {
     
     if [ -z "$ISO_NAME" ]; then
         echo "❌ Error: ISO name required"
-        echo "Usage: ./iso.sh --delete \"<iso-name>\""
+        echo "Usage: ./pikvm.sh --iso --delete \"<iso-name>\""
         echo ""
         echo "Available ISOs:"
         list_isos
@@ -566,10 +790,17 @@ delete_iso() {
     fi
 }
 
-# Main command dispatcher
-main() {
+# ISO command dispatcher (requires .env)
+iso_main() {
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "❌ Error: .env file not found at $ENV_FILE"
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+
     if [ $# -eq 0 ]; then
-        show_help
+        iso_show_help
         exit 0
     fi
     
@@ -600,7 +831,7 @@ main() {
     
     case "$COMMAND" in
         --help|-h)
-            show_help
+            iso_show_help
             ;;
         --list|-l)
             list_isos
@@ -626,7 +857,68 @@ main() {
         *)
             echo "❌ Unknown command: $COMMAND"
             echo ""
-            show_help
+            iso_show_help
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Top-level router
+# =============================================================================
+
+show_main_help() {
+    cat << EOF
+PiKVM shell tools
+
+Usage:
+
+  $ME --build [--test|--help]     Build Go ./pikvm binary (pulls .env from Vault if missing)
+  $ME --iso [--list|--upload|...] ISO / MSD manager (same commands as old iso.sh)
+  $ME --stream [port]             Test H.264 stream in ffplay/mpv (optional port 0..n)
+
+Examples:
+
+  $ME --build
+  $ME --build --test
+  $ME --iso --list
+  $ME --iso --upload /path/to/file.iso
+  $ME --stream
+  $ME --stream 2
+
+Python automation (wait for screen image, then type):
+
+  python3 pikvm.py automate --image ref.png --text "hello world"
+
+EOF
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        show_main_help
+        exit 0
+    fi
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        --build|-b)
+            build_dispatch "$@"
+            ;;
+        --iso|-i)
+            iso_main "$@"
+            ;;
+        --stream|--test-stream)
+            stream_main "$@"
+            ;;
+        --help|-h)
+            show_main_help
+            ;;
+        *)
+            echo "❌ Unknown command: $cmd"
+            echo ""
+            show_main_help
             exit 1
             ;;
     esac

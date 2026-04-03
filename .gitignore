@@ -1,5 +1,6 @@
 # Environment and credentials
 .env
+.venv/
 
 # Build artifacts
 pikvm
