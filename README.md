@@ -101,47 +101,56 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 ```bash
 ./pikvm.sh --iso --list      # ISO / MSD (same as old iso.sh)
 ./pikvm.sh --stream          # H.264 stream test (optional port: ./pikvm.sh --stream 2)
-./pikvm.sh --build           # Compile the Go TUI
+./pikvm.sh --build           # Compile the Go TUI + ensure `.venv` (Python deps)
+./pikvm.sh --sequence        # Run default JSON sequence (see `automation/seq-script/`)
 ```
 
-#### Local screen automation (`pikvm.py automate`)
+#### Local screen automation (`automation/pikvm.py automate`)
 
-Put PNG template crops in `images/`, focus the PiKVM browser window, then:
+Put PNG template crops under `automation/images/`, focus the PiKVM browser window, then:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python3 pikvm.py automate --image my_button.png --text "hello world"
+python3 automation/pikvm.py automate --image my_button.png --text "hello world"
 ```
 
 The repo includes `requirements.txt` (requests, Pillow, pyautogui, opencv-python). A local **`.venv/`** is gitignored; use it so `python3` is not the bare system interpreter without those packages.
 
 This polls the **local** display until the template appears, optionally clicks it, then types the text. For fuzzy matching add `--confidence 0.85` (requires `opencv-python`). On macOS, grant **Accessibility** to Terminal or your IDE so PyAutoGUI can send keystrokes.
 
-#### PiKVM API screenshots (`pikvm.py capture`)
+#### PiKVM API screenshots (`automation/pikvm.py capture`)
 
-Saves JPEGs from PiKVM’s HTTP snapshot API (active **switch port**, same 0-based index as the TUI). By default uses **port 2**, **every 1s**, into `./images` (no extra Python deps beyond the stdlib; needs **websocat** unless something else is already keeping the stream alive):
+Saves JPEGs from PiKVM’s HTTP snapshot API (active **switch port**, same 0-based index as the TUI). By default uses **port 2**, **every 1s**, into `./automation/images` (no extra Python deps beyond the stdlib; needs **websocat** unless something else is already keeping the stream alive):
 
 ```bash
-python3 pikvm.py capture
-python3 pikvm.py capture --port 2 --interval 1 --output-dir /Users/wgm0/px/pikvm/images
-python3 pikvm.py capture --duration 60 --no-keeper   # stream already open in browser
+python3 automation/pikvm.py capture
+python3 automation/pikvm.py capture --port 2 --interval 1 --output-dir /Users/wgm0/px/pikvm/automation/images
+python3 automation/pikvm.py capture --duration 60 --no-keeper   # stream already open in browser
 ```
 
 By default, **`switch/set_active` runs before every snapshot** so the HDMI mux stays on the requested port (helps avoid “wrong port” frames). Tune with `--settle`, `--warmup`, or `--no-reassert-port` if your PiKVM is slow or you see flicker. Use `-v` to print a snippet of `GET /api/switch` once for debugging.
 
-#### Multi-step GUI scripts (`pikvm.py run-sequence`)
+#### Multi-step GUI scripts (`automation/pikvm.py run-sequence`)
 
-Declarative JSON under `seq-script/` (see `seq-script/FORMAT.txt`). Example:
+Declarative JSON under `automation/seq-script/` (see `automation/seq-script/FORMAT.txt`). From the repo root you can use the shell wrapper (no manual `source .venv`):
 
 ```bash
-python3 pikvm.py run-sequence seq-script/port2-alarm.json
+./pikvm.sh --sequence
+./pikvm.sh --sequence automation/seq-script/port2-alarm.json
+./pikvm.sh --sequence automation/seq-script/port2-alarm.json --verbose
+```
+
+Or call Python directly:
+
+```bash
+.venv/bin/python automation/pikvm.py run-sequence automation/seq-script/port2-alarm.json
 ```
 
 - **`wait_image_pikvm`** — OpenCV template match on **PiKVM’s HTTP snapshot** for a given **switch port** (see JSON `pikvm_port`). This is the right choice when you care about **port 2’s video**, not a macOS screenshot (PyAutoGUI’s `wait_image` needs **Screen Recording** permission and only sees your **local** display).
 - **`wait_image`** — PyAutoGUI on the **Mac** screen only.
-- **`type` / `write`, `key` / `press`, `sleep`** — still use PyAutoGUI for keyboard input; **focus the PiKVM browser tab** so keys go to the guest.
+- **`type` / `write`, `key` / `press`, `sleep`** — if the sequence includes `wait_image_pikvm`, these default to **PiKVM HID** (`/api/hid/print`, `send_key`) so keys go to the guest; otherwise PyAutoGUI on this machine.
 
 Optional flags: `--pikvm-port`, `--no-stream-keeper`, `--warmup`, `--snapshot-quality`, `-v` / `--verbose` (or `PIKVM_VERBOSE=1`) to log every `set_active`, match scores, and `GET /api/switch` JSON. API ports are **0-based**; the web UI label is often **one higher** (API `2` → UI “Port 3”).
 
@@ -220,8 +229,8 @@ ISO_PATH=/path/to/iso         # Default ISO path
 
 **Scripts that use `.env`:**
 - ✅ `pikvm` (Go binary) - Main TUI & CLI commands
-- ✅ `pikvm.py` (Python) - ATX TUI, ISO upload, local GUI automation (`automate` with PyAutoGUI)
-- ✅ `pikvm.sh` (Bash) - Build, ISO manager, video stream test (`--build`, `--iso`, `--stream`)
+- ✅ `automation/pikvm.py` (Python) - ISO upload helpers, local GUI automation (`automate` with PyAutoGUI), PiKVM snapshot/capture, JSON sequences
+- ✅ `pikvm.sh` (Bash) - Build, ISO manager, video stream test, sequence runner (`--build`, `--iso`, `--stream`, `--sequence`)
 
 **Test configuration:**
 ```bash

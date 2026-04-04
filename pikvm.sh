@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # PiKVM unified shell tools (former build.sh, iso.sh, test_stream.sh)
-#   ./pikvm.sh --build [--test|--help]
-#   ./pikvm.sh --iso   [--list|--upload|...]   (same as old iso.sh)
-#   ./pikvm.sh --stream [port]                 (H.264 test; optional 0-based port)
+#   ./pikvm.sh --build   [--test|--help]
+#   ./pikvm.sh --iso     [--list|--upload|...]   (same as old iso.sh)
+#   ./pikvm.sh --stream  [port]                  (H.264 test; optional 0-based port)
+#   ./pikvm.sh --sequence [script]              (run automation/seq-script JSON via automation/pikvm.py)
 #
 
 set -e
@@ -27,7 +28,7 @@ Options:
   --help, -h       This help
   --test, -t       Test .env and tools
 
-First-time: if .env is missing, runs scripts/env-from-vault.sh (needs vault, jq, VAULT_ADDR).
+First-time: if .env is missing, runs automation/scripts/env-from-vault.sh (needs vault, jq, VAULT_ADDR).
 
 Examples:
   $ME --build
@@ -41,7 +42,7 @@ ensure_build_env() {
         return 0
     fi
 
-    echo "📋 No .env found; trying HashiCorp Vault (scripts/env-from-vault.sh)..."
+    echo "📋 No .env found; trying HashiCorp Vault (automation/scripts/env-from-vault.sh)..."
 
     if ! command -v vault >/dev/null 2>&1; then
         echo "❌ vault CLI not found. Install: https://developer.hashicorp.com/vault/install"
@@ -58,7 +59,7 @@ ensure_build_env() {
         exit 1
     fi
 
-    if ! ./scripts/env-from-vault.sh; then
+    if ! ./automation/scripts/env-from-vault.sh; then
         exit 1
     fi
     echo ""
@@ -165,6 +166,59 @@ build_dispatch() {
             exit 1
             ;;
     esac
+}
+
+# =============================================================================
+# Automation sequences (Python automation/pikvm.py run-sequence)
+# =============================================================================
+
+show_sequence_help() {
+    cat << EOF
+PiKVM Automation Sequences
+
+Usage: $ME --sequence [script]
+
+Options:
+  (no extra args)  Run default automation/seq-script/port2-alarm.json
+  <script>         Path to sequence JSON (relative to repo root), e.g. automation/seq-script/port2-alarm.json
+
+This wraps:
+  .venv/bin/python automation/pikvm.py run-sequence <script> [extra-args]
+
+The Python helper uses .env from the repo root and images under automation/images/.
+
+Examples:
+  $ME --sequence
+  $ME --sequence automation/seq-script/port2-alarm.json
+  $ME --sequence automation/seq-script/port2-alarm.json --verbose
+
+EOF
+}
+
+sequence_main() {
+    ensure_build_env
+    ensure_python_venv
+
+    local script="automation/seq-script/port2-alarm.json"
+    if [ $# -gt 0 ]; then
+        script="$1"
+        shift
+    fi
+
+    if [ ! -f "$script" ]; then
+        echo "❌ Sequence file not found: $script"
+        exit 1
+    fi
+
+    if [ ! -x ".venv/bin/python" ]; then
+        echo "❌ .venv/bin/python not found. Run: $ME --build"
+        exit 1
+    fi
+
+    echo "🔁 Running PiKVM sequence via automation/pikvm.py"
+    echo "    Script: $script"
+    echo ""
+    .venv/bin/python automation/pikvm.py run-sequence "$script" "$@"
 }
 
 # =============================================================================
@@ -420,14 +474,19 @@ upload_iso() {
         
         # Check if Python uploader exists
         SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-        if [ ! -f "$SCRIPT_DIR/pikvm.py" ]; then
+        PY="$SCRIPT_DIR/automation/pikvm.py"
+        if [ ! -f "$PY" ]; then
             echo -e "${RED}✗ Python uploader not found!${NC}"
-            echo "  Expected: $SCRIPT_DIR/pikvm.py"
+            echo "  Expected: $PY"
             exit 1
         fi
         
-        # Use Python streaming uploader for large files (stdlib)
-        python3 "$SCRIPT_DIR/pikvm.py" upload-builtin "$ISO_FILE"
+        # Use Python streaming uploader for large files (prefer venv if present)
+        if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+            "$SCRIPT_DIR/.venv/bin/python" "$PY" upload-builtin "$ISO_FILE"
+        else
+            python3 "$PY" upload-builtin "$ISO_FILE"
+        fi
         exit $?
     fi
     
@@ -873,9 +932,10 @@ PiKVM shell tools
 
 Usage:
 
-  $ME --build [--test|--help]     Build Go ./pikvm binary (pulls .env from Vault if missing)
-  $ME --iso [--list|--upload|...] ISO / MSD manager (same commands as old iso.sh)
-  $ME --stream [port]             Test H.264 stream in ffplay/mpv (optional port 0..n)
+  $ME --build [--test|--help]        Build Go ./pikvm binary (pulls .env from Vault if missing)
+  $ME --iso [--list|--upload|...]    ISO / MSD manager (same commands as old iso.sh)
+  $ME --stream [port]                Test H.264 stream in ffplay/mpv (optional port 0..n)
+  $ME --sequence [script]            Run Python automation sequence (automation/pikvm.py run-sequence)
 
 Examples:
 
@@ -888,7 +948,9 @@ Examples:
 
 Python automation (wait for screen image, then type):
 
-  python3 pikvm.py automate --image ref.png --text "hello world"
+  # From repo root (no manual venv activation needed):
+  $ME --sequence                       # runs default automation/seq-script/port2-alarm.json
+  $ME --sequence automation/seq-script/port2-alarm.json
 
 EOF
 }
@@ -911,6 +973,13 @@ main() {
             ;;
         --stream|--test-stream)
             stream_main "$@"
+            ;;
+        --sequence|-q)
+            if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+                show_sequence_help
+            else
+                sequence_main "$@"
+            fi
             ;;
         --help|-h)
             show_main_help

@@ -1,13 +1,14 @@
 PiKVM GUI sequences (JSON)
 ==========================
 
-Run:
-  python3 pikvm.py run-sequence seq-script/your.json
+Run (from git repo root):
+  ./pikvm.sh --sequence automation/seq-script/your.json
+  # or: .venv/bin/python automation/pikvm.py run-sequence automation/seq-script/your.json
 
 Top level: either a JSON array of steps, or { "steps": [ ... ] }.
 
-Paths in wait_image are relative to the repo root (directory that contains pikvm.py),
-unless you use an absolute path.
+Paths in wait_image / wait_image_pikvm are relative to the directory that contains
+automation/pikvm.py (i.e. automation/), unless you use an absolute path.
 
 Top-level JSON (optional, when using an object with "steps"):
 
@@ -23,7 +24,7 @@ Top-level JSON (optional, when using an object with "steps"):
 KVMD API: set_active?port uses 0-based index. GET /api/switch → result.summary.active_id
 is the UI port label (single-unit: "1".."4" for API 0..3). See seq-script/PORT-NUMBERING.txt.
 
-Debug: python3 pikvm.py run-sequence -v …  or  PIKVM_VERBOSE=1  or  "verbose": true in JSON.
+Debug: ./pikvm.sh --sequence automation/seq-script/foo.json --verbose  or  PIKVM_VERBOSE=1  or  "verbose": true in JSON.
 
 wait_image_pikvm — match template against PiKVM’s JPEG snapshot API (correct switch port;
 not your Mac screenshot — avoids macOS Screen Recording issues):

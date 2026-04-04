@@ -22,11 +22,20 @@ from pathlib import Path
 
 
 def load_env() -> dict[str, str]:
-    """Load PIKVM_* from .env next to this file."""
+    """Load PIKVM_* from .env (prefer repo root, fall back to script dir)."""
     script_dir = Path(__file__).resolve().parent
-    env_file = script_dir / ".env"
-    if not env_file.exists():
-        print(f"❌ Error: .env file not found at {env_file}")
+    # When pikvm.py lives under automation/, .env is usually one directory up.
+    candidates = [
+        script_dir.parent / ".env",
+        script_dir / ".env",
+    ]
+    env_file: Path | None = None
+    for c in candidates:
+        if c.is_file():
+            env_file = c
+            break
+    if env_file is None:
+        print("❌ Error: .env file not found (looked in: {})".format(", ".join(str(c) for c in candidates)))
         sys.exit(1)
 
     config: dict[str, str] = {}
@@ -1003,7 +1012,7 @@ def _resolve_sequence_path(repo_root: Path, p: str) -> Path:
 def run_sequence(args: argparse.Namespace) -> int:
     """
     Run automation steps from a JSON file (wait_image, wait_image_pikvm, type/write, key/press, sleep).
-    Paths in steps are relative to the repo root (directory containing pikvm.py).
+    Paths in steps are relative to the directory containing this file (automation/).
     wait_image_pikvm matches against PiKVM HTTP snapshots for a switch port (not the Mac desktop).
     If the sequence includes wait_image_pikvm, type/key default to PiKVM HID (/api/hid/print, like Go sendText).
     """
@@ -1399,7 +1408,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_runseq.add_argument(
         "script",
-        help="Path to sequence JSON (e.g. seq-script/port2-alarm.json)",
+        help="Path to sequence JSON (e.g. automation/seq-script/port2-alarm.json)",
     )
     p_runseq.add_argument(
         "--input",
