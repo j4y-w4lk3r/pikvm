@@ -21,7 +21,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# This file lives at automation/scripts/ — repo root is two levels up.
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUT_FILE="${1:-$PROJECT_ROOT/.env}"
 
 VAULT_KV_PATH="${VAULT_KV_PATH:-secret/pikvm}"
