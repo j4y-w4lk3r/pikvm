@@ -328,6 +328,9 @@ type model struct {
 	usbLinks   []bool
 	powerLeds  []bool
 	hddLeds    []bool
+
+	// /api/info snapshot for the status bar (idea #10)
+	info infoState
 	msdOnline   bool      // mass-storage device is online
 	msdBusy     bool      // MSD is currently writing
 	msdConnect  bool      // MSD is connected to the server
@@ -683,6 +686,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsClientsMsg:
 		m.wsLastEvent = time.Now()
 		m.wsClients = msg.Count
+		return m, nil
+
+	case wsInfoMsg:
+		// Periodic /api/info snapshot. Doesn't bump wsLastEvent — that
+		// indicator is specifically about the WS subscription health.
+		m.info = msg.state
 		return m, nil
 
 	case tea.KeyMsg:
@@ -1075,8 +1084,9 @@ func (m model) View() string {
 	// Help and result below
 	var bottom strings.Builder
 
-	// Live WS indicator (Phase 1 idea #1; full status bar comes in Phase 2 idea #10)
-	bottom.WriteString("\n  " + m.renderWSIndicator() + "\n")
+	// Continuous status bar (idea #10): user@host, platform, fw, topology,
+	// MSD, uptime, cpu/temp, clients, ATX-busy badge, WS health dot.
+	bottom.WriteString("\n  " + m.renderStatusBar() + "\n")
 
 	bottom.WriteString("\n  ")
 	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"))
@@ -1132,9 +1142,80 @@ func (m model) portStatusGlyphs(linear int) string {
 		style(on(m.powerLeds), iconPower)
 }
 
-// renderWSIndicator returns a one-line live-status fragment for the bottom of
-// the screen. Phase 2 idea #10 will expand this into a full status bar.
-func (m model) renderWSIndicator() string {
+// renderStatusBar (roadmap idea #10) — the always-visible single-line health
+// summary at the bottom of the screen. Pulls together everything we already
+// stream + everything we periodically poll:
+//
+//	user@host  │  PiKVM model  │  kvmd version  │  N ext × M ports  │
+//	MSD: ...  │  uptime ...  │  cpu N% / N°C  │  clients N  │  ws ●
+//
+// Sections that don't have data yet (e.g. before /api/info has returned the
+// first snapshot) are skipped silently so the bar doesn't flicker on startup.
+func (m model) renderStatusBar() string {
+	var parts []string
+
+	// 1) user@host (we always have this from .env / config.json)
+	parts = append(parts, helpStyle.Render(fmt.Sprintf("%s@%s", pikvmUser, pikvmHost)))
+
+	// 2) PiKVM platform (from /api/info hw.platform.model)
+	if m.info.Platform != "" {
+		parts = append(parts, helpStyle.Render("PiKVM "+m.info.Platform))
+	}
+
+	// 3) kvmd firmware version
+	if m.info.KvmdVersion != "" {
+		parts = append(parts, helpStyle.Render("kvmd v"+m.info.KvmdVersion))
+	}
+
+	// 4) topology summary (from /api/switch via WS)
+	if m.totalPorts > 0 {
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("%d ext × %d ports", m.extenders, m.portsPerExt)))
+	}
+
+	// 5) MSD state
+	if m.msdOnline {
+		var msd string
+		switch {
+		case m.msdUpload:
+			msd = fmt.Sprintf("MSD %s %.0f%%", m.msdUpName, m.msdUpPct)
+		case m.msdConnect:
+			msd = "MSD attached"
+		default:
+			msd = fmt.Sprintf("MSD idle (%s free)", humanBytes(m.msdFree))
+		}
+		parts = append(parts, helpStyle.Render(msd))
+	}
+
+	// 6) uptime
+	if m.info.UptimeTotal > 0 {
+		parts = append(parts, helpStyle.Render("up "+formatUptime(m.info)))
+	}
+
+	// 7) health (CPU% / temp). Color-code temp: warn over 70°C, error over 80°C.
+	if m.info.CPUTempC > 0 {
+		tempStr := fmt.Sprintf("%.0f°C", m.info.CPUTempC)
+		switch {
+		case m.info.CPUTempC >= 80:
+			tempStr = errorStyle.Render(tempStr)
+		case m.info.CPUTempC >= 70:
+			tempStr = warningStyle.Render(tempStr)
+		default:
+			tempStr = helpStyle.Render(tempStr)
+		}
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("cpu %d%%", m.info.CPUPercent))+helpStyle.Render(" / ")+tempStr)
+	}
+
+	// 8) clients connected to PiKVM (us + anyone else)
+	if m.wsClients > 0 {
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("clients %d", m.wsClients)))
+	}
+
+	// 9) ATX busy badge (rare but useful while a click is mid-flight)
+	if m.atxBusy {
+		parts = append(parts, warningStyle.Render("ATX busy"))
+	}
+
+	// 10) WS connection indicator (always last — most prominent)
 	var dot, label string
 	switch {
 	case m.wsConnected:
@@ -1147,24 +1228,8 @@ func (m model) renderWSIndicator() string {
 		dot = warningStyle.Render("●")
 		label = "ws connecting"
 	}
+	parts = append(parts, fmt.Sprintf("%s %s", dot, helpStyle.Render(label)))
 
-	parts := []string{
-		fmt.Sprintf("%s %s", dot, helpStyle.Render(label)),
-		helpStyle.Render(fmt.Sprintf("clients %d", m.wsClients)),
-	}
-	if m.msdOnline {
-		switch {
-		case m.msdUpload:
-			parts = append(parts, helpStyle.Render(fmt.Sprintf("MSD %s %.0f%%", m.msdUpName, m.msdUpPct)))
-		case m.msdConnect:
-			parts = append(parts, helpStyle.Render("MSD attached"))
-		default:
-			parts = append(parts, helpStyle.Render(fmt.Sprintf("MSD idle (%s free)", humanBytes(m.msdFree))))
-		}
-	}
-	if m.atxBusy {
-		parts = append(parts, warningStyle.Render("ATX busy"))
-	}
 	return strings.Join(parts, helpStyle.Render("  │  "))
 }
 
@@ -2038,6 +2103,7 @@ func main() {
 
 	p := tea.NewProgram(initialModel())
 	startWebSocket(wsCtx, p)
+	startInfoPoller(wsCtx, p)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)

@@ -41,7 +41,7 @@ Use the per-port `bios_key` from idea 5. If unset, show a small key picker: `[F7
 ### 9. `[x]` Dim / disable inapplicable actions
 If `summary.synced == false`, dim port-dependent ops. If `power_leds[port] == true`, dim "Power ON" and bold "Power OFF". Reduces accidental no-ops and makes intent obvious.
 
-### 10. `[ ]` Continuous status bar at the bottom
+### 10. `[x]` Continuous status bar at the bottom
 Single line: `pi@100.64.183.14 │ FW v9 │ 2 ext × 4 ports │ MSD: idle (1.4G free) │ uptime 4d12h │ ws ●`. Pulled from `/api/info`, `/api/msd`, and the WebSocket heartbeat. Live progress bar when an MSD upload is in flight. Instant "is the PiKVM alive?" feedback.
 
 ### 27. `[ ]` `--json` mode + `fzf` integration
