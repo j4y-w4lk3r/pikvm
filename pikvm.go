@@ -206,6 +206,15 @@ var (
 	// — the dim is purely a hint.
 	dimmedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#555555"))
+
+	// Suggested-action style (idea #9): the most likely useful op for the
+	// current port state, e.g. "Power ON" when the port is off. Deliberately
+	// a DIFFERENT color from selectedStyle (which is bold pastel green and
+	// indicates cursor focus) so users can tell "this is suggested" apart
+	// from "your cursor is here". Warm peach/orange + a leading '→' marker
+	// reads as "featured" without competing with the focus color.
+	suggestedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFB86C"))
 )
 
 type action struct {
@@ -1037,13 +1046,19 @@ func (m model) View() string {
 	}
 	for i, act := range actions {
 		state, suffix := m.opVisualState(act.name)
-		line := fmt.Sprintf("  [%d] %s%s", i+1, act.name, suffix)
+		// Two-char prefix keeps every row aligned: "→ " for suggested,
+		// "  " for everything else, including cursor focus.
+		marker := "  "
+		if state == "primary" {
+			marker = "→ "
+		}
+		line := fmt.Sprintf("%s[%d] %s%s", marker, i+1, act.name, suffix)
 		var rendered string
 		switch {
 		case m.focusMode == "ops" && m.cursor == i:
 			rendered = selectedStyle.Render(line)
 		case state == "primary":
-			rendered = successStyle.Render(line)
+			rendered = suggestedStyle.Render(line)
 		case state == "dimmed":
 			rendered = dimmedStyle.Render(line)
 		default:
