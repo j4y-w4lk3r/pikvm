@@ -221,7 +221,7 @@ The selected item is shown in **bold pastel green text (#9bf09d)** - no boxes, n
 Configuration is stored in `.env` file:
 
 ```bash
-PIKVM_HOST=100.65.29.115     # PiKVM IP (via Tailscale)
+PIKVM_HOST=100.64.183.14     # PiKVM IP (via Tailscale)
 PIKVM_USER=admin              # Username
 PIKVM_PASS=your_password      # Password
 ISO_PATH=/path/to/iso         # Default ISO path
@@ -330,7 +330,7 @@ The scripts use PiKVM's HID (keyboard) API to send keystrokes:
 
 The **easiest and most reliable** method:
 
-1. **Open PiKVM:** https://100.65.29.115/kvm/
+1. **Open PiKVM:** https://100.64.183.14/kvm/
 2. **Login** with your credentials
 3. **Navigate:** Click menu icon (≡) → **System** → **Mass Storage Device**
 4. **Upload:** Click **"Upload"** or **"+"** button
