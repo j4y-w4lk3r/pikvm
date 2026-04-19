@@ -201,13 +201,32 @@ When you change extender or port, the TUI **automatically calls** `POST /api/swi
 
 ### Live state via WebSocket
 
-The TUI keeps a persistent `wss://<host>/api/ws?stream=1` subscription. Whenever **anything** changes the PiKVM — this binary, the web UI, your phone over Tailscale, a button on the device — the active port indicator, ATX status, and MSD info update in real time without polling. A small live indicator at the bottom shows:
+The TUI keeps a persistent `wss://<host>/api/ws?stream=1` subscription. Whenever **anything** changes the PiKVM — this binary, the web UI, your phone over Tailscale, a button on the device — the active port indicator, ATX status, MSD info, **and per-port video / USB / power signals** update in real time without polling. A small live indicator at the bottom shows:
 
 ```
 ● ws live  │  clients 2  │  MSD idle (18.4G free)
 ```
 
-`●` color: green = connected, yellow = connecting, red = reconnecting. Press `r` to force a manual reconnect (auto-reconnect with exponential backoff up to 30 s already happens on its own).
+`●` color: green = connected, yellow = connecting, red = reconnecting. Press `r` to force a manual WebSocket reconnect (it cancels the open conn, redials, and PiKVM re-emits the full state burst).
+
+### Per-port live status icons
+
+Under each `[1] [2] [3] [4]` port box, three Nerd Font glyphs show what's currently happening on that port:
+
+```
+[P] Port:    [1]    [2]    [3]    [4]
+                 ·      ·            ·  ·  ·
+              legend:  video    usb    power
+```
+
+- `` (TV) — HDMI signal detected
+- `` (USB) — USB cable up between PiKVM and the target
+- `` (bolt) — ATX power LED is on
+- `·` — link/LED is off
+
+Glyphs on the **active** port (the one PiKVM is currently routing video/USB through) render in success-green; on inactive ports they render in pastel-green. When a port has nothing plugged in, all three slots show dim dots — instantly telling you which extender slots are populated and which are empty.
+
+> Requires a Nerd-Font-patched terminal font (e.g. `JetBrainsMono Nerd Font`).
 
 ### Symbols Used:
 - ⚡ Lightning - Power/Energy

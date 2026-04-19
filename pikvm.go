@@ -224,6 +224,12 @@ type model struct {
 	atxPower    bool      // global ATX power LED (set up for Phase 2 idea 9)
 	atxHdd      bool      // global ATX HDD LED
 	atxBusy     bool      // ATX is busy executing a click
+
+	// per-port live signals indexed by linear port (length == totalPorts)
+	videoLinks []bool
+	usbLinks   []bool
+	powerLeds  []bool
+	hddLeds    []bool
 	msdOnline   bool      // mass-storage device is online
 	msdBusy     bool      // MSD is currently writing
 	msdConnect  bool      // MSD is connected to the server
@@ -246,6 +252,10 @@ func initialModel() model {
 		totalPorts:     state.TotalPorts,
 		activePort:     state.ActivePort,
 		availablePorts: state.Available,
+		videoLinks:     state.VideoLinks,
+		usbLinks:       state.UsbLinks,
+		powerLeds:      state.PowerLeds,
+		hddLeds:        state.HddLeds,
 		portsDetected:  true,
 		inScripts:      false,
 	}
@@ -285,6 +295,13 @@ type switchState struct {
 	TotalPorts  int        // Extenders * PortsPerExt
 	ActivePort  int        // currently-active linear port (0-based)
 	Available   []portInfo // every existing linear port
+
+	// Per-port live status (length == TotalPorts when populated).
+	// PiKVM reports these in /api/switch and pushes updates over /api/ws.
+	VideoLinks []bool // true if the port has a live HDMI signal
+	UsbLinks   []bool // true if the port has the USB cable up
+	PowerLeds  []bool // true if the port's ATX power LED is on
+	HddLeds    []bool // true if the port's ATX HDD LED blinked recently
 }
 
 // fetchSwitchState queries /api/switch once and returns the topology.
@@ -328,6 +345,18 @@ func fetchSwitchState() switchState {
 				ActiveID   string `json:"active_id"`
 				Synced     bool   `json:"synced"`
 			} `json:"summary"`
+			Atx struct {
+				Leds struct {
+					Power []bool `json:"power"`
+					Hdd   []bool `json:"hdd"`
+				} `json:"leds"`
+			} `json:"atx"`
+			Video struct {
+				Links []bool `json:"links"`
+			} `json:"video"`
+			Usb struct {
+				Links []bool `json:"links"`
+			} `json:"usb"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil || !parsed.OK {
@@ -351,6 +380,10 @@ func fetchSwitchState() switchState {
 	for i := 0; i < total; i++ {
 		state.Available = append(state.Available, portInfo{id: i, active: true})
 	}
+	state.VideoLinks = parsed.Result.Video.Links
+	state.UsbLinks = parsed.Result.Usb.Links
+	state.PowerLeds = parsed.Result.Atx.Leds.Power
+	state.HddLeds = parsed.Result.Atx.Leds.Hdd
 	return state
 }
 
@@ -387,6 +420,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.totalPorts = msg.state.TotalPorts
 			m.activePort = msg.state.ActivePort
 			m.availablePorts = msg.state.Available
+			m.videoLinks = msg.state.VideoLinks
+			m.usbLinks = msg.state.UsbLinks
+			m.powerLeds = msg.state.PowerLeds
+			m.hddLeds = msg.state.HddLeds
 
 			if followActive {
 				m.port = msg.state.ActivePort
@@ -561,15 +598,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			if !m.selectingISO {
-				state := fetchSwitchState()
-				m.extenders = state.Extenders
-				m.portsPerExt = state.PortsPerExt
-				m.totalPorts = state.TotalPorts
-				m.activePort = state.ActivePort
-				m.availablePorts = state.Available
-				m.result = fmt.Sprintf("\uf00c Refreshed: %d extender(s) × %d port(s)  │  PiKVM active: %d.%d",
-					state.Extenders, state.PortsPerExt,
-					state.ActivePort/state.PortsPerExt+1, state.ActivePort%state.PortsPerExt+1)
+				// Force a fresh /api/ws subscription. The reader goroutine
+				// will close the current conn, dial again, and PiKVM will
+				// re-emit the full state burst (switch/atx/msd/...) which our
+				// reducers fold into the model.
+				requestWSReconnect()
+				m.wsConnected = false
+				m.wsLastError = ""
+				m.result = "\uf021 Reconnecting WebSocket..."
 			}
 
 		case "enter", " ":
@@ -680,7 +716,11 @@ func (m model) View() string {
 	}
 	left.WriteString("  " + extRow.String() + "\n")
 
-	// [P] Port row: [1] [2] [3] [4]
+	// [P] Port row: [1]    [2]    [3]    [4]
+	// Each port box is widened to a 7-char cell so the 3-glyph status row
+	// below aligns visually under it.
+	const portCellW = 7
+
 	var portRow strings.Builder
 	if m.focusMode == "port" {
 		portRow.WriteString(selectedStyle.Render("[P] Port:    "))
@@ -690,16 +730,31 @@ func (m model) View() string {
 	for i := 1; i <= m.portsPerExt; i++ {
 		portRow.WriteString(" ")
 		label := fmt.Sprintf("[%d]", i)
+		var styled string
 		switch {
 		case i == curSubPort && m.focusMode == "port":
-			portRow.WriteString(selectedStyle.Render(label))
+			styled = selectedStyle.Render(label)
 		case i == curSubPort:
-			portRow.WriteString(successStyle.Render(label))
+			styled = successStyle.Render(label)
 		default:
-			portRow.WriteString(unselectedStyle.Render(label))
+			styled = unselectedStyle.Render(label)
 		}
+		portRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(styled))
 	}
 	left.WriteString("  " + portRow.String() + "\n")
+
+	// Status row aligned under the port boxes:
+	//      <video> <usb> <power>      <-- 5 visible glyphs incl. spaces, 5 cols
+	// Each glyph is colored: green when lit on the active port, pastel-green
+	// when lit on an inactive port, dim · when off.
+	var statusRow strings.Builder
+	statusRow.WriteString(strings.Repeat(" ", len("[P] Port:    "))) // align under boxes
+	for i := 1; i <= m.portsPerExt; i++ {
+		statusRow.WriteString(" ")
+		linear := m.linearPort(curExt, i)
+		statusRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(m.portStatusGlyphs(linear)))
+	}
+	left.WriteString("  " + statusRow.String() + "\n")
 
 	// Active-port summary
 	activeExt := m.activePort/m.portsPerExt + 1
@@ -709,7 +764,9 @@ func (m model) View() string {
 		syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + fmt.Sprintf("%d.%d", activeExt, activePortNum) + ")"
 	}
 	summary := fmt.Sprintf("\uf0e4 Selected: %d.%d  ", curExt, curSubPort)
+	legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
 	left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
+	left.WriteString(legend + "\n")
 	left.WriteString("\n")
 
 	// [O] Operations
@@ -777,6 +834,39 @@ func (m model) View() string {
 	bottom.WriteString("\n")
 
 	return main + bottom.String()
+}
+
+// Per-port status glyphs from JetBrainsMono Nerd Font (Font Awesome).
+// Render these only when the corresponding link/LED is true; otherwise show
+// a dim middle-dot to keep column alignment.
+const (
+	iconVideo = "\uf26c" // nf-fa-television (HDMI signal present)
+	iconUsb   = "\uf287" // nf-fa-usb        (USB cable up to the target)
+	iconPower = "\uf0e7" // nf-fa-bolt       (ATX power LED on)
+	iconHdd   = "\uf0a0" // nf-fa-hdd_o      (ATX HDD activity LED)
+	iconDim   = "·"
+)
+
+// portStatusGlyphs returns a 3-glyph status string for one linear port:
+// video / usb / power. The active port (the one PiKVM video/USB are routed
+// through) gets its glyphs rendered in success-green; non-active but lit
+// glyphs are rendered in pastel green (portInfoStyle); off glyphs are dim.
+func (m model) portStatusGlyphs(linear int) string {
+	on := func(arr []bool) bool {
+		return linear < len(arr) && arr[linear]
+	}
+	style := func(lit bool, glyph string) string {
+		if !lit {
+			return helpStyle.Render(iconDim)
+		}
+		if linear == m.activePort {
+			return successStyle.Render(glyph)
+		}
+		return portInfoStyle.Render(glyph)
+	}
+	return style(on(m.videoLinks), iconVideo) + " " +
+		style(on(m.usbLinks), iconUsb) + " " +
+		style(on(m.powerLeds), iconPower)
 }
 
 // renderWSIndicator returns a one-line live-status fragment for the bottom of

@@ -23,11 +23,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/coder/websocket"
 )
+
+// ----------------------------------------------------------------------------
+// Manual reconnect plumbing for the 'r' key.
+//
+// The Bubble Tea Update() loop calls requestWSReconnect() which:
+//   1. Closes the currently-open *websocket.Conn (if any), which makes the
+//      reader in runWSOnce return and the outer loop reconnect.
+//   2. Pokes wsReconnectSignal so the outer loop skips its backoff sleep
+//      and dials immediately instead of waiting up to 30s.
+// ----------------------------------------------------------------------------
+
+var (
+	wsCurrentConn     atomic.Pointer[websocket.Conn]
+	wsReconnectSignal = make(chan struct{}, 1)
+)
+
+// requestWSReconnect is safe to call from any goroutine. It is a no-op if no
+// connection is currently open or if a reconnect is already pending.
+func requestWSReconnect() {
+	if conn := wsCurrentConn.Load(); conn != nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "manual reconnect")
+	}
+	select {
+	case wsReconnectSignal <- struct{}{}:
+	default:
+	}
+}
 
 // ----------------------------------------------------------------------------
 // Bubble Tea messages emitted by the WS goroutine.
@@ -99,9 +127,15 @@ func startWebSocket(ctx context.Context, prog *tea.Program) {
 
 			prog.Send(wsDisconnectedMsg{err: err})
 
+			// Sleep `backoff` OR until a manual reconnect is requested,
+			// whichever comes first. A manual reconnect resets backoff so the
+			// next failure starts retrying quickly again.
 			select {
 			case <-ctx.Done():
 				return
+			case <-wsReconnectSignal:
+				backoff = time.Second
+				continue
 			case <-time.After(backoff):
 			}
 			backoff *= 2
@@ -142,6 +176,10 @@ func runWSOnce(ctx context.Context, prog *tea.Program) error {
 	// PiKVM may stream large initial bursts (full switch + edids JSON). Allow
 	// generously large messages.
 	conn.SetReadLimit(4 * 1024 * 1024)
+
+	// Publish the live conn so requestWSReconnect() can force-close it.
+	wsCurrentConn.Store(conn)
+	defer wsCurrentConn.Store(nil)
 
 	prog.Send(wsConnectedMsg{})
 
@@ -211,6 +249,18 @@ func decodeSwitchEvent(raw json.RawMessage) (wsSwitchMsg, bool) {
 			ActiveID   string `json:"active_id"`
 			Synced     bool   `json:"synced"`
 		} `json:"summary"`
+		Atx struct {
+			Leds struct {
+				Power []bool `json:"power"`
+				Hdd   []bool `json:"hdd"`
+			} `json:"leds"`
+		} `json:"atx"`
+		Video struct {
+			Links []bool `json:"links"`
+		} `json:"video"`
+		Usb struct {
+			Links []bool `json:"links"`
+		} `json:"usb"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return wsSwitchMsg{}, false
@@ -227,6 +277,10 @@ func decodeSwitchEvent(raw json.RawMessage) (wsSwitchMsg, bool) {
 		TotalPorts:  total,
 		PortsPerExt: total / units,
 		ActivePort:  parsed.Summary.ActivePort,
+		VideoLinks:  parsed.Video.Links,
+		UsbLinks:    parsed.Usb.Links,
+		PowerLeds:   parsed.Atx.Leds.Power,
+		HddLeds:     parsed.Atx.Leds.Hdd,
 	}
 	if state.PortsPerExt == 0 {
 		state.PortsPerExt = 1
