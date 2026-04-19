@@ -24,16 +24,16 @@ const infoPollInterval = 30 * time.Second
 
 // infoState is the slice of /api/info we care about for the status bar.
 type infoState struct {
-	Hostname     string  // meta.server.host       (e.g. "j4ypi0")
-	KvmdVersion  string  // system.kvmd.version    (e.g. "4.127")
-	Platform     string  // hw.platform.model      (e.g. "v4plus")
-	UptimeTotal  int64   // uptime.total           (seconds)
-	UptimeDays   int     // uptime.parts.days
-	UptimeHours  int     // uptime.parts.hours
-	UptimeMins   int     // uptime.parts.minutes
-	CPUPercent   int     // hw.health.cpu.percent
-	MemPercent   float64 // hw.health.mem.percent
-	CPUTempC     float64 // hw.health.temp.cpu     (Celsius)
+	Hostname    string  `json:"hostname"`     // meta.server.host       (e.g. "j4ypi0")
+	KvmdVersion string  `json:"kvmd_version"` // system.kvmd.version    (e.g. "4.127")
+	Platform    string  `json:"platform"`     // hw.platform.model      (e.g. "v4plus")
+	UptimeTotal int64   `json:"uptime_total"` // uptime.total           (seconds)
+	UptimeDays  int     `json:"uptime_days"`  // uptime.parts.days
+	UptimeHours int     `json:"uptime_hours"` // uptime.parts.hours
+	UptimeMins  int     `json:"uptime_mins"`  // uptime.parts.minutes
+	CPUPercent  int     `json:"cpu_percent"`  // hw.health.cpu.percent
+	MemPercent  float64 `json:"mem_percent"`  // hw.health.mem.percent
+	CPUTempC    float64 `json:"cpu_temp_c"`   // hw.health.temp.cpu     (Celsius)
 }
 
 // wsInfoMsg is the Bubble Tea message produced by the poller. Reusing the
@@ -47,7 +47,7 @@ type wsInfoMsg struct{ state infoState }
 func startInfoPoller(ctx context.Context, prog *tea.Program) {
 	go func() {
 		fire := func() {
-			if state, ok := fetchInfoState(ctx); ok {
+			if state, ok := fetchInfoState(); ok {
 				prog.Send(wsInfoMsg{state: state})
 			}
 		}
@@ -67,7 +67,7 @@ func startInfoPoller(ctx context.Context, prog *tea.Program) {
 
 // fetchInfoState calls /api/info once and returns the parsed slice we care
 // about. Returns ok=false on any error so the caller can skip the Send.
-func fetchInfoState(ctx context.Context) (infoState, bool) {
+func fetchInfoState() (infoState, bool) {
 	resp, err := pikvmDo("GET", "/info", nil, 5*time.Second)
 	if err != nil {
 		return infoState{}, false

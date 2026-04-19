@@ -44,7 +44,7 @@ If `summary.synced == false`, dim port-dependent ops. If `power_leds[port] == tr
 ### 10. `[x]` Continuous status bar at the bottom
 Single line: `pi@100.64.183.14 │ FW v9 │ 2 ext × 4 ports │ MSD: idle (1.4G free) │ uptime 4d12h │ ws ●`. Pulled from `/api/info`, `/api/msd`, and the WebSocket heartbeat. Live progress bar when an MSD upload is in flight. Instant "is the PiKVM alive?" feedback.
 
-### 27. `[ ]` `--json` mode + `fzf` integration
+### 27. `[x]` `--json` mode + `fzf` integration
 Optional flag that emits structured events (`{"event":"port_changed","port":"2.3"}`) instead of pretty TUI output. Pipeable into `jq`, scripts, CI. Also: a `pikvm pick` mode that shells out to `fzf` for fuzzy selection of port / ISO / script — perfect for keyboard-only humans.
 
 ---

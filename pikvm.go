@@ -199,13 +199,6 @@ var (
 	// Divider style
 	dividerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#333333"))
-
-	// Dimmed-action style (idea #9): used for operations that are visually
-	// indicated as redundant or ineffective for the current port state, e.g.
-	// "Power OFF" when the port is already off. Operation is still runnable
-	// — the dim is purely a hint.
-	dimmedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
 )
 
 type action struct {
@@ -284,9 +277,9 @@ type portInfo struct {
 
 // isoEntry is one option in the Boot-from-ISO list (on PiKVM or local file).
 type isoEntry struct {
-	Display   string // shown in list (e.g. "debian.iso (local)")
-	Name      string // filename used for PiKVM set_params
-	LocalPath string // non-empty if local file (upload first)
+	Display   string `json:"display"`              // shown in list (e.g. "debian.iso (local)")
+	Name      string `json:"name"`                 // filename used for PiKVM set_params
+	LocalPath string `json:"local_path,omitempty"` // non-empty if local file (upload first)
 }
 
 // focusMode: which menu is active for number-key input.
@@ -531,18 +524,18 @@ func (c *cancelBody) Close() error {
 //	linearPort = (extender-1) * portsPerExt + (port-1)   // both 1-based
 //	            = unit * portsPerExt + channel           // both 0-based
 type switchState struct {
-	Extenders   int        // number of extender units (e.g. 2)
-	PortsPerExt int        // ports per extender (typically 4)
-	TotalPorts  int        // Extenders * PortsPerExt
-	ActivePort  int        // currently-active linear port (0-based)
-	Available   []portInfo // every existing linear port
+	Extenders   int        `json:"extenders"`     // number of extender units (e.g. 2)
+	PortsPerExt int        `json:"ports_per_ext"` // ports per extender (typically 4)
+	TotalPorts  int        `json:"total_ports"`   // Extenders * PortsPerExt
+	ActivePort  int        `json:"active_port"`   // currently-active linear port (0-based)
+	Available   []portInfo `json:"-"`             // every existing linear port (TUI-internal)
 
 	// Per-port live status (length == TotalPorts when populated).
 	// PiKVM reports these in /api/switch and pushes updates over /api/ws.
-	VideoLinks []bool // true if the port has a live HDMI signal
-	UsbLinks   []bool // true if the port has the USB cable up
-	PowerLeds  []bool // true if the port's ATX power LED is on
-	HddLeds    []bool // true if the port's ATX HDD LED blinked recently
+	VideoLinks []bool `json:"video_links"` // true if the port has a live HDMI signal
+	UsbLinks   []bool `json:"usb_links"`   // true if the port has the USB cable up
+	PowerLeds  []bool `json:"power_leds"`  // true if the port's ATX power LED is on
+	HddLeds    []bool `json:"hdd_leds"`    // true if the port's ATX HDD LED blinked recently
 }
 
 // fetchSwitchState queries /api/switch once and returns the topology.
@@ -1041,15 +1034,14 @@ func (m model) View() string {
 		left.WriteString("  " + unselectedStyle.Render("[O] Operations:") + "\n")
 	}
 	for i, act := range actions {
-		state, suffix := m.opVisualState(act.name)
+		_, suffix := m.opVisualState(act.name)
 		line := fmt.Sprintf("  [%d] %s%s", i+1, act.name, suffix)
 		var rendered string
-		switch {
-		case m.focusMode == "ops" && m.cursor == i:
+		if m.focusMode == "ops" && m.cursor == i {
 			rendered = selectedStyle.Render(line)
-		case state == "dimmed":
-			rendered = dimmedStyle.Render(line)
-		default:
+		} else {
+			// All non-focused rows render identically — the parenthetical
+			// suffix (e.g. " (already off)", " (port off)") is the only hint.
 			rendered = unselectedStyle.Render(line)
 		}
 		left.WriteString("  " + rendered + "\n")
@@ -2089,9 +2081,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check for CLI arguments
+	// CLI mode (idea #27): if any args were passed, run as a one-shot
+	// command instead of launching the TUI. See cli.go for the full surface.
 	if len(os.Args) > 1 {
-		handleCLI()
+		runCLI()
 		return
 	}
 
@@ -2111,65 +2104,3 @@ func main() {
 	}
 }
 
-func handleCLI() {
-	if len(os.Args) < 2 {
-		showHelp()
-		return
-	}
-
-	port := 0
-	if len(os.Args) > 2 {
-		fmt.Sscanf(os.Args[2], "%d", &port)
-	}
-
-	command := os.Args[1]
-
-	var selectedAction *action
-	switch command {
-	case "on":
-		selectedAction = &actions[0]
-	case "off":
-		selectedAction = &actions[1]
-	case "click":
-		selectedAction = &actions[2]
-	case "long":
-		selectedAction = &actions[3]
-	case "reset":
-		selectedAction = &actions[4]
-	case "reset-long":
-		selectedAction = &actions[5]
-	default:
-		showHelp()
-		return
-	}
-
-	fmt.Printf("⚡ Executing: %s on port %d\n", selectedAction.name, port)
-	result := executeAction(*selectedAction, port)
-	fmt.Println(result)
-}
-
-func showHelp() {
-	help := `
-PiKVM Control - Go + Bubble Tea Edition
-
-Usage:
-  pikvm              Launch interactive TUI
-  pikvm [cmd] [port] Execute command on specified port (default: 0)
-
-Commands:
-  on                 Turn power ON
-  off                Turn power OFF
-  click              Power button short press
-  long               Power button long press
-  reset              Reset button short press
-  reset-long         Reset button long press
-
-Examples:
-  pikvm              # Launch TUI
-  pikvm on           # Power on port 0
-  pikvm off 1        # Power off port 1
-  pikvm long 0       # Force shutdown port 0
-
-`
-	fmt.Println(strings.TrimSpace(help))
-}
