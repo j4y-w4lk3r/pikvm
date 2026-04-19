@@ -12,7 +12,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blo
 
 These are small, high-impact changes that make everything that follows easier.
 
-### 1. `[ ]` Live switch state via WebSocket — no polling, no `r` key
+### 1. `[x]` Live switch state via WebSocket — no polling, no `r` key
 Replace `fetchSwitchState()` polling with a persistent `wss://<host>/api/ws` subscription. Stream switch / ATX LED / MSD / video-link / USB-link events into the Bubble Tea event loop as custom messages. The `[E]/[P]` rows update in real time when *anything* (this TUI, the web UI, your phone, a button on the device) changes the active port. The `r` key becomes a manual reconnect.
 
 **Why first:** unlocks Phase 3's grid view, snapshot dashboard, and the status bar's "live" feel.

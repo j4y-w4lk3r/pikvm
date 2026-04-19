@@ -199,6 +199,16 @@ The TUI is **modal**: you press a letter to focus a section, then digits to pick
 
 When you change extender or port, the TUI **automatically calls** `POST /api/switch/set_active` so video/USB/HID immediately follow your selection on the PiKVM. The status line shows `✓` when your selection matches what PiKVM reports as active, or a warning if they're out of sync.
 
+### Live state via WebSocket
+
+The TUI keeps a persistent `wss://<host>/api/ws?stream=1` subscription. Whenever **anything** changes the PiKVM — this binary, the web UI, your phone over Tailscale, a button on the device — the active port indicator, ATX status, and MSD info update in real time without polling. A small live indicator at the bottom shows:
+
+```
+● ws live  │  clients 2  │  MSD idle (18.4G free)
+```
+
+`●` color: green = connected, yellow = connecting, red = reconnecting. Press `r` to force a manual reconnect (auto-reconnect with exponential backoff up to 30 s already happens on its own).
+
 ### Symbols Used:
 - ⚡ Lightning - Power/Energy
 - ▶ Triangle - Extenders indicator  

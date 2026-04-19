@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -214,6 +215,23 @@ type model struct {
 	selectingISO        bool      // true if selecting ISO from list
 	availableISOEntries []isoEntry
 	isoCursor           int
+
+	// --- live state from the WebSocket subscription (Phase 1, idea #1) ---
+	wsConnected bool      // true while the /api/ws subscription is healthy
+	wsLastError string    // last reconnect error (shown if disconnected)
+	wsLastEvent time.Time // when we last received any event (heartbeat indicator)
+	wsClients   int       // count of WS clients currently attached to PiKVM
+	atxPower    bool      // global ATX power LED (set up for Phase 2 idea 9)
+	atxHdd      bool      // global ATX HDD LED
+	atxBusy     bool      // ATX is busy executing a click
+	msdOnline   bool      // mass-storage device is online
+	msdBusy     bool      // MSD is currently writing
+	msdConnect  bool      // MSD is connected to the server
+	msdFree     int64     // free bytes on MSD storage
+	msdTotal    int64     // total bytes on MSD storage
+	msdUpload   bool      // an upload is in progress
+	msdUpName   string    // name of the file currently uploading
+	msdUpPct    float64   // upload progress 0..100
 }
 
 func initialModel() model {
@@ -338,6 +356,68 @@ func fetchSwitchState() switchState {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	// ---- Live PiKVM events from /api/ws (Phase 1, idea #1) -----------------
+	case wsConnectedMsg:
+		m.wsConnected = true
+		m.wsLastError = ""
+		m.wsLastEvent = time.Now()
+		return m, nil
+
+	case wsDisconnectedMsg:
+		m.wsConnected = false
+		if msg.err != nil {
+			m.wsLastError = msg.err.Error()
+		}
+		return m, nil
+
+	case wsSwitchMsg:
+		// Topology / active port pushed by PiKVM. Only overwrite if the
+		// payload looks valid (non-zero ports).
+		m.wsLastEvent = time.Now()
+		if msg.state.TotalPorts > 0 {
+			// If the user's current selection was just tracking PiKVM's old
+			// active port (the common case: "I haven't manually picked yet"),
+			// keep following along. Otherwise leave m.port alone so a remote
+			// change doesn't yank the cursor away from what they're focused on.
+			followActive := m.port == m.activePort || m.port >= msg.state.TotalPorts
+
+			m.extenders = msg.state.Extenders
+			m.portsPerExt = msg.state.PortsPerExt
+			m.totalPorts = msg.state.TotalPorts
+			m.activePort = msg.state.ActivePort
+			m.availablePorts = msg.state.Available
+
+			if followActive {
+				m.port = msg.state.ActivePort
+			}
+		}
+		return m, nil
+
+	case wsAtxMsg:
+		m.wsLastEvent = time.Now()
+		m.atxBusy = msg.Busy
+		m.atxPower = msg.PowerLed
+		m.atxHdd = msg.HddLed
+		return m, nil
+
+	case wsMsdMsg:
+		m.wsLastEvent = time.Now()
+		m.msdOnline = msg.Online
+		m.msdBusy = msg.Busy
+		m.msdConnect = msg.Connected
+		m.msdFree = msg.FreeBytes
+		m.msdTotal = msg.TotalBytes
+		m.msdUpload = msg.Uploading
+		m.msdUpName = msg.UploadName
+		m.msdUpPct = msg.UploadPct
+		return m, nil
+
+	case wsClientsMsg:
+		m.wsLastEvent = time.Now()
+		m.wsClients = msg.Count
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -674,8 +754,12 @@ func (m model) View() string {
 
 	// Help and result below
 	var bottom strings.Builder
+
+	// Live WS indicator (Phase 1 idea #1; full status bar comes in Phase 2 idea #10)
+	bottom.WriteString("\n  " + m.renderWSIndicator() + "\n")
+
 	bottom.WriteString("\n  ")
-	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Refresh  q: Quit"))
+	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"))
 	bottom.WriteString("\n")
 	if m.result != "" {
 		bottom.WriteString("\n  ")
@@ -693,6 +777,57 @@ func (m model) View() string {
 	bottom.WriteString("\n")
 
 	return main + bottom.String()
+}
+
+// renderWSIndicator returns a one-line live-status fragment for the bottom of
+// the screen. Phase 2 idea #10 will expand this into a full status bar.
+func (m model) renderWSIndicator() string {
+	var dot, label string
+	switch {
+	case m.wsConnected:
+		dot = successStyle.Render("●")
+		label = "ws live"
+	case m.wsLastError != "":
+		dot = errorStyle.Render("●")
+		label = "ws reconnecting"
+	default:
+		dot = warningStyle.Render("●")
+		label = "ws connecting"
+	}
+
+	parts := []string{
+		fmt.Sprintf("%s %s", dot, helpStyle.Render(label)),
+		helpStyle.Render(fmt.Sprintf("clients %d", m.wsClients)),
+	}
+	if m.msdOnline {
+		switch {
+		case m.msdUpload:
+			parts = append(parts, helpStyle.Render(fmt.Sprintf("MSD %s %.0f%%", m.msdUpName, m.msdUpPct)))
+		case m.msdConnect:
+			parts = append(parts, helpStyle.Render("MSD attached"))
+		default:
+			parts = append(parts, helpStyle.Render(fmt.Sprintf("MSD idle (%s free)", humanBytes(m.msdFree))))
+		}
+	}
+	if m.atxBusy {
+		parts = append(parts, warningStyle.Render("ATX busy"))
+	}
+	return strings.Join(parts, helpStyle.Render("  │  "))
+}
+
+// humanBytes formats a byte count in a friendly short form (1.4G, 230M, ...).
+func humanBytes(n int64) string {
+	const k = 1024
+	switch {
+	case n >= k*k*k:
+		return fmt.Sprintf("%.1fG", float64(n)/float64(k*k*k))
+	case n >= k*k:
+		return fmt.Sprintf("%.0fM", float64(n)/float64(k*k))
+	case n >= k:
+		return fmt.Sprintf("%.0fK", float64(n)/float64(k))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 func isPortAvailable(port int, ports []portInfo) bool {
@@ -1556,8 +1691,15 @@ func main() {
 		return
 	}
 
-	// Launch TUI
+	// Launch TUI with a live PiKVM WebSocket subscription feeding events into
+	// the Bubble Tea event loop. Cancelling wsCtx on shutdown cleanly tears
+	// down the reader goroutine.
+	wsCtx, wsCancel := context.WithCancel(context.Background())
+	defer wsCancel()
+
 	p := tea.NewProgram(initialModel())
+	startWebSocket(wsCtx, p)
+
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
