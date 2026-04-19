@@ -22,36 +22,58 @@ from pathlib import Path
 
 
 def load_env() -> dict[str, str]:
-    """Load PIKVM_* from .env (prefer repo root, fall back to script dir)."""
+    """Load PiKVM credentials from config.json (preferred) or .env (fallback).
+
+    Idea #3: config.json is the single source-of-truth written by
+    automation/scripts/env-from-vault.sh. It's a flat object with the same
+    keys we used in .env (PIKVM_HOST, PIKVM_USER, ...). The .env path is
+    kept for back-compat with hand-written setups.
+    """
     script_dir = Path(__file__).resolve().parent
-    # When pikvm.py lives under automation/, .env is usually one directory up.
-    candidates = [
-        script_dir.parent / ".env",
-        script_dir / ".env",
-    ]
-    env_file: Path | None = None
-    for c in candidates:
-        if c.is_file():
-            env_file = c
-            break
-    if env_file is None:
-        print("❌ Error: .env file not found (looked in: {})".format(", ".join(str(c) for c in candidates)))
-        sys.exit(1)
+    # pikvm.py lives under automation/, so the repo root is one up.
+    repo_root = script_dir.parent
+
+    json_candidates = [repo_root / "config.json", script_dir / "config.json"]
+    env_candidates = [repo_root / ".env", script_dir / ".env"]
 
     config: dict[str, str] = {}
-    with open(env_file, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+
+    for c in json_candidates:
+        if c.is_file():
+            try:
+                data = json.loads(c.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"⚠️  {c} present but not valid JSON ({e}); falling back to .env")
                 continue
-            if "=" in line:
-                key, value = line.split("=", 1)
-                config[key.strip()] = value.strip()
+            if isinstance(data, dict):
+                # schema_version is metadata; keep everything else as strings.
+                config = {k: str(v) for k, v in data.items() if k != "schema_version"}
+                break
+
+    if not config:
+        env_file: Path | None = None
+        for c in env_candidates:
+            if c.is_file():
+                env_file = c
+                break
+        if env_file is None:
+            print("❌ Error: no config.json or .env found (looked in: {})".format(
+                ", ".join(str(c) for c in json_candidates + env_candidates)))
+            sys.exit(1)
+
+        with open(env_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    config[key.strip()] = value.strip()
 
     required_keys = ("PIKVM_HOST", "PIKVM_USER", "PIKVM_PASS")
     for key in required_keys:
         if key not in config:
-            print(f"❌ Error: {key} not found in .env file")
+            print(f"❌ Error: {key} not found in config")
             sys.exit(1)
 
     return config

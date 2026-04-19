@@ -1,6 +1,9 @@
 # Environment and credentials
 .env
+config.json
 .venv/
+__pycache__/
+*.pyc
 
 # Build artifacts
 pikvm

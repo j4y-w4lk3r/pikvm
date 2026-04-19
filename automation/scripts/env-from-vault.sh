@@ -43,56 +43,78 @@ fi
 
 json=$(vault kv get -format=json "$VAULT_KV_PATH")
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+# Cleanup any temp files we leave behind on error.
+cleanup() {
+  rm -f "${env_tmp:-}" "${config_tmp:-}"
+}
+trap cleanup EXIT
 
+# Required keys (must be present in Vault). All consumers — pikvm.go,
+# pikvm.sh, automation/pikvm.py — read these names.
+REQUIRED_KEYS=(
+  PIKVM_HOST PIKVM_USER PIKVM_PASS PIKVM_ROOT_PASS
+  ISO_PATH
+  TAILSCALE_AUTH_KEY
+  UBUNTU_PASSWORD
+)
+
+# Pull every value once and stash in an associative array so we can write
+# both .env and config.json without re-querying Vault.
+declare -A VALUES
+for key in "${REQUIRED_KEYS[@]}"; do
+  val=$(echo "$json" | jq -r --arg k "$key" '.data.data[$k] // empty')
+  if [[ -z "$val" || "$val" == "null" ]]; then
+    echo "error: missing or empty key in Vault: $key (path: $VAULT_KV_PATH)" >&2
+    exit 1
+  fi
+  VALUES[$key]="$val"
+done
+
+# ----- write .env (back-compat for anything that still reads it) ------------
+
+env_tmp="$(mktemp)"
 {
   echo "# PiKVM — generated from Vault (${VAULT_KV_PATH})"
-  echo "# Regenerate: ./scripts/env-from-vault.sh"
+  echo "# Regenerate: ./automation/scripts/env-from-vault.sh"
   echo ""
-
-  # Section headers + keys in a stable order (matches prior hand-written .env)
   echo "# PiKVM Configuration"
-  for key in PIKVM_HOST PIKVM_USER PIKVM_PASS PIKVM_ROOT_PASS; do
-    val=$(echo "$json" | jq -r --arg k "$key" '.data.data[$k] // empty')
-    if [[ -z "$val" || "$val" == "null" ]]; then
-      echo "error: missing or empty key in Vault: $key (path: $VAULT_KV_PATH)" >&2
-      exit 1
-    fi
-    printf '%s=%s\n' "$key" "$val"
+  for k in PIKVM_HOST PIKVM_USER PIKVM_PASS PIKVM_ROOT_PASS; do
+    printf '%s=%s\n' "$k" "${VALUES[$k]}"
   done
-
   echo ""
   echo "# ISO Settings"
-  key=ISO_PATH
-  val=$(echo "$json" | jq -r --arg k "$key" '.data.data[$k] // empty')
-  if [[ -z "$val" || "$val" == "null" ]]; then
-    echo "error: missing or empty key in Vault: $key" >&2
-    exit 1
-  fi
-  printf '%s=%s\n' "$key" "$val"
-
+  printf 'ISO_PATH=%s\n' "${VALUES[ISO_PATH]}"
   echo ""
   echo "# Tailscale Configuration"
-  key=TAILSCALE_AUTH_KEY
-  val=$(echo "$json" | jq -r --arg k "$key" '.data.data[$k] // empty')
-  if [[ -z "$val" || "$val" == "null" ]]; then
-    echo "error: missing or empty key in Vault: $key" >&2
-    exit 1
-  fi
-  printf '%s=%s\n' "$key" "$val"
-
+  printf 'TAILSCALE_AUTH_KEY=%s\n' "${VALUES[TAILSCALE_AUTH_KEY]}"
   echo ""
   echo "# Ubuntu Server Configuration"
-  key=UBUNTU_PASSWORD
-  val=$(echo "$json" | jq -r --arg k "$key" '.data.data[$k] // empty')
-  if [[ -z "$val" || "$val" == "null" ]]; then
-    echo "error: missing or empty key in Vault: $key" >&2
-    exit 1
-  fi
-  printf '%s=%s\n' "$key" "$val"
-} >"$tmp"
-
-mv "$tmp" "$OUT_FILE"
-trap - EXIT
+  printf 'UBUNTU_PASSWORD=%s\n' "${VALUES[UBUNTU_PASSWORD]}"
+} >"$env_tmp"
+chmod 600 "$env_tmp"
+mv "$env_tmp" "$OUT_FILE"
 echo "Wrote $OUT_FILE"
+
+# ----- write config.json (the new single-source-of-truth, idea #3) ----------
+#
+# Schema: flat object, same keys as .env, plus schema_version. Consumers
+# (Go / Bash / Python) try config.json first and fall back to .env.
+
+CONFIG_FILE="$(dirname "$OUT_FILE")/config.json"
+config_tmp="$(mktemp)"
+
+# Build with jq so values are properly JSON-escaped (handles passwords with
+# quotes, backslashes, etc.).
+jq_args=(--arg _schema 1)
+jq_filter='{ "schema_version": ($_schema | tonumber)'
+for k in "${REQUIRED_KEYS[@]}"; do
+  jq_args+=(--arg "$k" "${VALUES[$k]}")
+  jq_filter+=", \"$k\": \$$k"
+done
+jq_filter+=" }"
+
+# shellcheck disable=SC2068
+jq -n "${jq_args[@]}" "$jq_filter" >"$config_tmp"
+chmod 600 "$config_tmp"
+mv "$config_tmp" "$CONFIG_FILE"
+echo "Wrote $CONFIG_FILE"

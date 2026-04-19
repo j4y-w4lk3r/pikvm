@@ -13,6 +13,38 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 ME="$SCRIPT_DIR/$(basename "$0")"
 
+# ---------------------------------------------------------------------------
+# load_pikvm_config — exports PIKVM_HOST/USER/PASS/etc. into the environment.
+#
+# Idea #3: prefer config.json (written by env-from-vault.sh) over .env. The
+# JSON form has fewer foot-guns (no shell expansion of $-strings, no need
+# for quoting) and is the same source-of-truth read by pikvm.go and
+# automation/pikvm.py.
+#
+# Returns 0 if config was loaded, 1 if neither file exists.
+# ---------------------------------------------------------------------------
+load_pikvm_config() {
+    if [ -f "$SCRIPT_DIR/config.json" ] && command -v jq >/dev/null 2>&1; then
+        local key val
+        for key in PIKVM_HOST PIKVM_USER PIKVM_PASS PIKVM_ROOT_PASS \
+                   ISO_PATH TAILSCALE_AUTH_KEY UBUNTU_PASSWORD; do
+            val=$(jq -r --arg k "$key" '.[$k] // empty' "$SCRIPT_DIR/config.json")
+            if [ -n "$val" ] && [ "$val" != "null" ]; then
+                export "$key=$val"
+            fi
+        done
+        return 0
+    fi
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        # shellcheck source=/dev/null
+        set -a
+        source "$SCRIPT_DIR/.env"
+        set +a
+        return 0
+    fi
+    return 1
+}
+
 # =============================================================================
 # Build (Go binary) — former build.sh
 # =============================================================================
@@ -38,11 +70,11 @@ EOF
 }
 
 ensure_build_env() {
-    if [ -f .env ]; then
+    if [ -f config.json ] || [ -f .env ]; then
         return 0
     fi
 
-    echo "📋 No .env found; trying HashiCorp Vault (automation/scripts/env-from-vault.sh)..."
+    echo "📋 No config.json or .env found; trying HashiCorp Vault (automation/scripts/env-from-vault.sh)..."
 
     if ! command -v vault >/dev/null 2>&1; then
         echo "❌ vault CLI not found. Install: https://developer.hashicorp.com/vault/install"
@@ -226,17 +258,14 @@ sequence_main() {
 # =============================================================================
 
 stream_main() {
-    if [[ ! -f .env ]]; then
-        echo "Missing .env. Create it with PIKVM_HOST=, PIKVM_USER=, PIKVM_PASS="
+    if ! load_pikvm_config; then
+        echo "Missing config: need either config.json or .env"
+        echo "Run: ./automation/scripts/env-from-vault.sh"
         exit 1
     fi
-    set -a
-    source .env
-    set +a
-
     for key in PIKVM_HOST PIKVM_USER PIKVM_PASS; do
         if [[ -z ${!key} ]]; then
-            echo "Missing $key in .env"
+            echo "Missing $key in config"
             exit 1
         fi
     done
@@ -849,14 +878,13 @@ delete_iso() {
     fi
 }
 
-# ISO command dispatcher (requires .env)
+# ISO command dispatcher (requires config.json or .env)
 iso_main() {
-    if [ ! -f "$ENV_FILE" ]; then
-        echo "❌ Error: .env file not found at $ENV_FILE"
+    if ! load_pikvm_config; then
+        echo "❌ Error: no config.json or .env found in $SCRIPT_DIR"
+        echo "   Run: ./automation/scripts/env-from-vault.sh"
         exit 1
     fi
-    # shellcheck source=/dev/null
-    source "$ENV_FILE"
 
     if [ $# -eq 0 ]; then
         iso_show_help

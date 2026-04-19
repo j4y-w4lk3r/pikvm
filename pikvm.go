@@ -30,43 +30,98 @@ var (
 	ubuntuPassword   string
 )
 
-// Load configuration from .env file
+// loadEnv populates the package-level pikvm* / tailscale* / ubuntu* globals.
+//
+// Lookup order (idea #3 — single config source generated from Vault):
+//
+//  1. config.json (next to the binary, then cwd) — preferred, JSON schema
+//     written by automation/scripts/env-from-vault.sh.
+//  2. .env (next to the binary, then cwd) — back-compat with anything
+//     hand-written before idea #3.
+//
+// The function name is kept for backward compatibility with main()/tests.
 func loadEnv() error {
-	execPath, err := os.Executable()
-	if err != nil {
+	if err := loadFromConfigJSON(); err == nil {
+		baseURL = "https://" + pikvmHost + "/api"
+		return nil
+	}
+	if err := loadFromDotenv(); err != nil {
 		return err
 	}
-	envPath := filepath.Join(filepath.Dir(execPath), ".env")
+	baseURL = "https://" + pikvmHost + "/api"
+	return nil
+}
 
-	// If running from source (go run), try current directory
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		envPath = ".env"
+// resolveConfigPath returns the first existing path matching name in the
+// usual locations (next to the binary, then current directory). Empty string
+// if nothing was found.
+func resolveConfigPath(name string) string {
+	if execPath, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(execPath), name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
+	if _, err := os.Stat(name); err == nil {
+		return name
+	}
+	return ""
+}
 
-	file, err := os.Open(envPath)
+func loadFromConfigJSON() error {
+	path := resolveConfigPath("config.json")
+	if path == "" {
+		return fmt.Errorf("config.json not found")
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("cannot open .env file: %v", err)
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var cfg struct {
+		SchemaVersion    int    `json:"schema_version"`
+		PIKVMHost        string `json:"PIKVM_HOST"`
+		PIKVMUser        string `json:"PIKVM_USER"`
+		PIKVMPass        string `json:"PIKVM_PASS"`
+		TailscaleAuthKey string `json:"TAILSCALE_AUTH_KEY"`
+		UbuntuPassword   string `json:"UBUNTU_PASSWORD"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if cfg.PIKVMHost == "" || cfg.PIKVMUser == "" || cfg.PIKVMPass == "" {
+		return fmt.Errorf("%s missing required PIKVM_HOST/USER/PASS", path)
+	}
+	pikvmHost = cfg.PIKVMHost
+	pikvmUser = cfg.PIKVMUser
+	pikvmPass = cfg.PIKVMPass
+	tailscaleAuthKey = cfg.TailscaleAuthKey
+	ubuntuPassword = cfg.UbuntuPassword
+	return nil
+}
+
+func loadFromDotenv() error {
+	path := resolveConfigPath(".env")
+	if path == "" {
+		return fmt.Errorf("neither config.json nor .env found")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-
-		// Parse KEY=VALUE
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
-
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-
 		switch key {
 		case "PIKVM_HOST":
 			pikvmHost = value
@@ -80,13 +135,13 @@ func loadEnv() error {
 			ubuntuPassword = value
 		}
 	}
-
-	if pikvmHost == "" || pikvmUser == "" || pikvmPass == "" {
-		return fmt.Errorf("missing required config in .env: PIKVM_HOST, PIKVM_USER, or PIKVM_PASS")
+	if err := scanner.Err(); err != nil {
+		return err
 	}
-
-	baseURL = "https://" + pikvmHost + "/api"
-	return scanner.Err()
+	if pikvmHost == "" || pikvmUser == "" || pikvmPass == "" {
+		return fmt.Errorf("%s missing required PIKVM_HOST/USER/PASS", path)
+	}
+	return nil
 }
 
 // Styles - Pastel green theme
