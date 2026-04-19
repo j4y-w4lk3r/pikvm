@@ -340,6 +340,96 @@ func (m model) Init() tea.Cmd {
 	return nil
 }
 
+// ----------------------------------------------------------------------------
+// Shared HTTP client (roadmap idea #4).
+//
+// Previously every API call constructed its own *http.Transport + tls.Config
+// + *http.Client. That meant a fresh TCP + TLS handshake per request — about
+// 10-30 ms of wall-clock waste each time, plus the risk of leaking idle
+// connections.
+//
+// Now there is exactly one client process-wide, lazily initialized. The
+// transport keeps a small idle-connection pool so back-to-back calls reuse
+// the underlying TCP+TLS session. Per-call timeouts are imposed through
+// context (not a client-level Timeout, which would clobber every caller).
+// ----------------------------------------------------------------------------
+
+var (
+	pikvmHTTPOnce   sync.Once
+	pikvmHTTPClient *http.Client
+)
+
+func httpClient() *http.Client {
+	pikvmHTTPOnce.Do(func() {
+		pikvmHTTPClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				MaxIdleConns:        8,
+				MaxIdleConnsPerHost: 4,
+				IdleConnTimeout:     90 * time.Second,
+				ForceAttemptHTTP2:   false, // PiKVM (kvmd) is HTTP/1.1 only
+			},
+			// No client-level Timeout: each pikvmDo call sets its own via ctx.
+		}
+	})
+	return pikvmHTTPClient
+}
+
+// newPikvmRequest builds an authenticated, context-bound request to
+// baseURL+endpoint. Caller is responsible for sending it via runPikvmRequest
+// AND for calling the returned cancel func (typically deferred until after
+// the response body is closed). Use this when you need to set extra headers
+// before sending; otherwise prefer pikvmDo.
+func newPikvmRequest(method, endpoint string, body io.Reader, timeout time.Duration) (*http.Request, context.CancelFunc, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+endpoint, body)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	req.SetBasicAuth(pikvmUser, pikvmPass)
+	return req, cancel, nil
+}
+
+// runPikvmRequest sends a request built by newPikvmRequest and wires the
+// supplied cancel func into resp.Body so closing the body also frees the
+// per-call context.
+func runPikvmRequest(req *http.Request, cancel context.CancelFunc) (*http.Response, error) {
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// pikvmDo is the common case: build + send. Caller MUST close resp.Body.
+// Pass timeout <= 0 to use the 10s default.
+func pikvmDo(method, endpoint string, body io.Reader, timeout time.Duration) (*http.Response, error) {
+	req, cancel, err := newPikvmRequest(method, endpoint, body, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return runPikvmRequest(req, cancel)
+}
+
+// cancelBody calls the request's context cancel func when the body is
+// closed. Without this, the per-call timeout context would leak until GC.
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelBody) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
 // switchState describes the PiKVM switch topology and current active port.
 // Linear port indexing is used everywhere internally:
 //
@@ -370,15 +460,7 @@ func fetchSwitchState() switchState {
 		Available: []portInfo{{id: 0, active: true}},
 	}
 
-	url := baseURL + "/switch"
-	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return state
-	}
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("GET", "/switch", nil, 3*time.Second)
 	if err != nil {
 		return state
 	}
@@ -989,35 +1071,18 @@ func isPortAvailable(port int, ports []portInfo) bool {
 // For special keys (F7, F2, Delete, etc.) use events/send_key
 // For text characters use hid/print
 func sendKey(key string) error {
-	var url string
-
-	// Check if it's a special key or regular text
-	// Function keys, Delete, etc. use send_key endpoint
+	var endpoint string
 	if isSpecialKey(key) {
-		url = fmt.Sprintf("%s/hid/events/send_key?key=%s", baseURL, key)
+		// Function keys, Delete, etc. use send_key endpoint
+		endpoint = "/hid/events/send_key?key=" + key
 	} else {
-		// Regular text uses print API
-		url = fmt.Sprintf("%s/hid/print?text=%s", baseURL, key)
+		endpoint = "/hid/print?text=" + key
 	}
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr}
-
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("POST", endpoint, nil, 0)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	return nil
 }
 
@@ -1211,15 +1276,7 @@ func testKeyboard(port int) string {
 
 // setSwitchPort sets the PiKVM switch active port so video/HID follow the selected port (POST /api/switch/set_active?port=N).
 func setSwitchPort(port int) error {
-	url := fmt.Sprintf("%s/switch/set_active?port=%d", baseURL, port)
-	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("POST", fmt.Sprintf("/switch/set_active?port=%d", port), nil, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -1357,54 +1414,26 @@ func quotedAppleScript(s string) string {
 	return b.String()
 }
 
-// Helper function to send text using PiKVM's print API
+// sendText POSTs raw text to PiKVM's /hid/print so it gets typed on the
+// connected target.  Long text needs the body channel (not a query param)
+// hence the per-call header tweak.
 func sendText(text string) error {
-	// URL-encode the text for the query parameter
-	encodedText := strings.ReplaceAll(text, " ", "+")
-	encodedText = strings.ReplaceAll(encodedText, "\n", "%0A")
-
-	url := fmt.Sprintf("%s/hid/print", baseURL)
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
-
-	// Send text as POST body (not query parameter for large text)
-	req, err := http.NewRequest("POST", url, strings.NewReader(text))
+	req, cancel, err := newPikvmRequest("POST", "/hid/print", strings.NewReader(text), 30*time.Second)
 	if err != nil {
 		return err
 	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
 	req.Header.Set("Content-Type", "text/plain")
-
-	resp, err := client.Do(req)
+	resp, err := runPikvmRequest(req, cancel)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	return nil
 }
 
 // Fetch available ISOs from PiKVM
 func fetchAvailableISOs() ([]string, error) {
-	url := baseURL + "/msd"
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("GET", "/msd", nil, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -1788,78 +1817,37 @@ func bootFromWindows11ISO(port int) string {
 	return result.String()
 }
 
-// Helper function to select an MSD image
+// selectMSDImage selects an ISO image as the active mass-storage backing.
 func selectMSDImage(imageName string) error {
-	// Use query parameter as per official API docs
-	url := fmt.Sprintf("https://%s/api/msd/set_params?image=%s", pikvmHost, imageName)
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
-
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("POST", "/msd/set_params?image="+imageName, nil, 10*time.Second)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-
-	// Log successful response for debugging
 	fmt.Printf("    → API Response: %s\n", string(body))
-
 	return nil
 }
 
-// Helper function to connect/disconnect MSD
+// connectMSD attaches/detaches the virtual USB drive to/from the target.
 func connectMSD(connect bool) error {
-	// Use correct endpoint: /api/msd/set_connected (not set_params!)
-	// As per official API docs: https://docs.pikvm.org/api/
 	connectValue := 0
 	if connect {
 		connectValue = 1
 	}
-	url := fmt.Sprintf("https://%s/api/msd/set_connected?connected=%d", pikvmHost, connectValue)
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
-
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-
-	resp, err := client.Do(req)
+	resp, err := pikvmDo("POST", fmt.Sprintf("/msd/set_connected?connected=%d", connectValue), nil, 10*time.Second)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-
-	// Log successful response for debugging
 	fmt.Printf("    → API Response: %s\n", string(body))
-
 	return nil
 }
 
@@ -1881,22 +1869,7 @@ func executeAction(act action, port int) string {
 
 	// Standard API call
 	endpoint := fmt.Sprintf(act.apiCmd, port)
-	url := baseURL + endpoint
-
-	// Create HTTP client with SSL verification disabled
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr}
-
-	req, err := http.NewRequest(act.method, url, nil)
-	if err != nil {
-		return fmt.Sprintf("\uf057 Error: %v", err)
-	}
-
-	req.SetBasicAuth(pikvmUser, pikvmPass)
-
-	resp, err := client.Do(req)
+	resp, err := pikvmDo(act.method, endpoint, nil, 0)
 	if err != nil {
 		return fmt.Sprintf("\uf057 Error: %v", err)
 	}
