@@ -238,6 +238,38 @@ var customScripts = []customScript{
 // modal key picker instead (same pattern as bootFromISO).
 func bootToBIOSPlaceholder(port int) string { return "" }
 
+// launchScript runs (or pops the relevant modal for) the customScript at idx.
+// It centralizes the "what to do when a script is selected" logic so the
+// digit and Enter handlers in both focus-modes don't duplicate the switch.
+func (m *model) launchScript(idx int) {
+	if idx < 0 || idx >= len(customScripts) {
+		return
+	}
+	s := customScripts[idx]
+	switch s.name {
+	case "Boot from ISO":
+		m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
+		entries, err := fetchAvailableISOEntries()
+		if err != nil {
+			m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
+			return
+		}
+		if len(entries) == 0 {
+			m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
+			return
+		}
+		m.selectingISO = true
+		m.availableISOEntries = entries
+		m.isoCursor = 0
+		m.result = ""
+	case "Boot to BIOS":
+		m.selectingBIOSKey = true
+		m.result = ""
+	default:
+		m.result = s.script(m.port)
+	}
+}
+
 type portInfo struct {
 	id     int
 	active bool
@@ -637,6 +669,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "c":
 			if !m.selectingISO && !m.selectingBIOSKey {
 				m.focusMode = "scripts"
+				m.cursor = 0
 			}
 
 		case "up", "k":
@@ -645,6 +678,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isoCursor--
 				}
 			} else if m.focusMode == "ops" && m.cursor > 0 {
+				m.cursor--
+			} else if m.focusMode == "scripts" && m.cursor > 0 {
 				m.cursor--
 			} else if m.focusMode == "" && m.cursor > 0 {
 				m.cursor--
@@ -660,6 +695,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.focusMode == "ops" && m.cursor < len(actions)-1 {
 				m.cursor++
+			} else if m.focusMode == "scripts" && m.cursor < len(customScripts)-1 {
+				m.cursor++
 			} else if m.focusMode == "" && m.cursor < len(actions)-1 {
 				m.cursor++
 			} else if m.focusMode == "" && m.cursor == len(actions)-1 {
@@ -668,7 +705,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.focusMode == "" && m.inScripts && m.cursor < len(customScripts)-1 {
 				m.cursor++
 			}
-			// scripts focus: no cursor, use 1-9 to execute
 
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if m.selectingISO {
@@ -728,27 +764,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if digit >= 1 && digit <= 9 {
 					idx := digit - 1
 					if idx < len(customScripts) {
-						script := customScripts[idx]
-						switch script.name {
-						case "Boot from ISO":
-							m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
-							entries, err := fetchAvailableISOEntries()
-							if err != nil {
-								m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
-							} else if len(entries) == 0 {
-								m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
-							} else {
-								m.selectingISO = true
-								m.availableISOEntries = entries
-								m.isoCursor = 0
-								m.result = ""
-							}
-						case "Boot to BIOS":
-							m.selectingBIOSKey = true
-							m.result = ""
-						default:
-							m.result = script.script(m.port)
-						}
+						m.cursor = idx
+						m.launchScript(idx)
 					}
 				}
 			}
@@ -774,33 +791,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.result = bootFromISOEntry(m.port, entry)
 				}
 			} else if m.focusMode == "ops" {
-				result := executeAction(actions[m.cursor], m.port)
-				m.result = result
+				m.result = executeAction(actions[m.cursor], m.port)
+			} else if m.focusMode == "scripts" {
+				m.launchScript(m.cursor)
 			} else if m.focusMode == "" && m.inScripts {
-				selectedScript := customScripts[m.cursor]
-				switch selectedScript.name {
-				case "Boot from ISO":
-					m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
-					entries, err := fetchAvailableISOEntries()
-					if err != nil {
-						m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
-					} else if len(entries) == 0 {
-						m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
-					} else {
-						m.selectingISO = true
-						m.availableISOEntries = entries
-						m.isoCursor = 0
-						m.result = ""
-					}
-				case "Boot to BIOS":
-					m.selectingBIOSKey = true
-					m.result = ""
-				default:
-					m.result = selectedScript.script(m.port)
-				}
+				m.launchScript(m.cursor)
 			} else if m.focusMode == "" && !m.inScripts {
-				result := executeAction(actions[m.cursor], m.port)
-				m.result = result
+				m.result = executeAction(actions[m.cursor], m.port)
 			}
 		}
 	}
@@ -982,19 +979,19 @@ func (m model) View() string {
 
 	leftCol := lipgloss.NewStyle().Width(leftWidth).Render(left.String())
 
-	// Right column: [C] Custom Scripts, 1-9 to run
+	// Right column: [C] Custom Scripts — j/k navigate, 1-9 jump, Enter run
 	var right strings.Builder
 	right.WriteString("\n\n\n")
 	if m.focusMode == "scripts" {
-		right.WriteString("  " + selectedStyle.Render("[C] Custom Scripts (1-9 run)") + " \uf058\n\n")
+		right.WriteString("  " + selectedStyle.Render("[C] Custom Scripts (j/k, 1-9, Enter):") + "\n\n")
 	} else {
 		right.WriteString("  " + unselectedStyle.Render("[C] Custom Scripts:") + "\n\n")
 	}
 	for i, script := range customScripts {
 		line := fmt.Sprintf("  [%d] %s", i+1, script.name)
-		if m.focusMode == "scripts" {
-			right.WriteString("  " + unselectedStyle.Render(line) + "\n")
-		} else if m.focusMode == "" && m.inScripts && m.cursor == i {
+		highlighted := (m.focusMode == "scripts" && m.cursor == i) ||
+			(m.focusMode == "" && m.inScripts && m.cursor == i)
+		if highlighted {
 			right.WriteString("  " + selectedStyle.Render(line) + "\n")
 		} else {
 			right.WriteString("  " + unselectedStyle.Render(line) + "\n")
