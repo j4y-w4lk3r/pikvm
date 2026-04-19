@@ -206,15 +206,6 @@ var (
 	// — the dim is purely a hint.
 	dimmedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#555555"))
-
-	// Suggested-action style (idea #9): the most likely useful op for the
-	// current port state, e.g. "Power ON" when the port is off. Deliberately
-	// a DIFFERENT color from selectedStyle (which is bold pastel green and
-	// indicates cursor focus) so users can tell "this is suggested" apart
-	// from "your cursor is here". Warm peach/orange + a leading '→' marker
-	// reads as "featured" without competing with the focus color.
-	suggestedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFB86C"))
 )
 
 type action struct {
@@ -380,12 +371,10 @@ func (m model) linearPort(ext, port int) int { return (ext-1)*m.portsPerExt + (p
 // opVisualState describes how an operation should be rendered given the live
 // state of the currently-selected port (idea #9):
 //
-//	"primary": the most likely useful action (Power ON when port is off,
-//	           Power OFF when port is on) — rendered bold pastel green.
-//	"dimmed":  redundant or ineffective right now (Power ON when port is
-//	           already on, Reset Click when port is off, Disconnect Drive
-//	           when nothing is mounted) — rendered very dim grey.
-//	"normal":  no opinion, render in default unselected color.
+//	"dimmed": redundant or ineffective right now (Power ON when port is
+//	          already on, Reset Click when port is off, Disconnect Drive
+//	          when nothing is mounted) — rendered very dim grey.
+//	"normal": no opinion, render in default unselected color.
 //
 // suffix is an optional parenthetical hint shown after the action name (e.g.
 // "Power OFF (already off)") so the user understands at a glance WHY it's
@@ -393,28 +382,26 @@ func (m model) linearPort(ext, port int) int { return (ext-1)*m.portsPerExt + (p
 //
 // Cursor focus styling in the View always wins — the user can still run a
 // dimmed op if they want; the dim is a hint, not enforcement.
+//
+// Note: an earlier iteration also returned "primary" to bold-highlight the
+// most likely next action (e.g. Power ON when off). That looked too much
+// like permanent cursor focus and was removed by user request.
 func (m model) opVisualState(name string) (state, suffix string) {
 	portKnown := m.port < len(m.powerLeds)
 	portOn := portKnown && m.powerLeds[m.port]
 
 	switch name {
 	case "Power ON":
-		if !portKnown {
-			return "normal", ""
-		}
-		if portOn {
+		if portKnown && portOn {
 			return "dimmed", " (already on)"
 		}
-		return "primary", ""
+		return "normal", ""
 
 	case "Power OFF":
-		if !portKnown {
-			return "normal", ""
-		}
-		if !portOn {
+		if portKnown && !portOn {
 			return "dimmed", " (already off)"
 		}
-		return "primary", ""
+		return "normal", ""
 
 	case "Power Click", "Power Long Press", "Reset Click", "Reset Long Press":
 		if portKnown && !portOn {
@@ -1046,19 +1033,11 @@ func (m model) View() string {
 	}
 	for i, act := range actions {
 		state, suffix := m.opVisualState(act.name)
-		// Two-char prefix keeps every row aligned: "→ " for suggested,
-		// "  " for everything else, including cursor focus.
-		marker := "  "
-		if state == "primary" {
-			marker = "→ "
-		}
-		line := fmt.Sprintf("%s[%d] %s%s", marker, i+1, act.name, suffix)
+		line := fmt.Sprintf("  [%d] %s%s", i+1, act.name, suffix)
 		var rendered string
 		switch {
 		case m.focusMode == "ops" && m.cursor == i:
 			rendered = selectedStyle.Render(line)
-		case state == "primary":
-			rendered = suggestedStyle.Render(line)
 		case state == "dimmed":
 			rendered = dimmedStyle.Render(line)
 		default:

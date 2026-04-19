@@ -15,15 +15,15 @@ func TestOpVisualState(t *testing.T) {
 		wantState   string
 		wantSuffix  string
 	}{
-		// Power ON
-		{"PowerON_off",       "Power ON",   0, []bool{false, false}, false, "primary", ""},
-		{"PowerON_on",        "Power ON",   0, []bool{true, false},  false, "dimmed",  " (already on)"},
-		{"PowerON_unknown",   "Power ON",   5, []bool{false},        false, "normal",  ""},
+		// Power ON — only ever dim or normal, no proactive 'suggested' tier
+		{"PowerON_off",       "Power ON",   0, []bool{false, false}, false, "normal", ""},
+		{"PowerON_on",        "Power ON",   0, []bool{true, false},  false, "dimmed", " (already on)"},
+		{"PowerON_unknown",   "Power ON",   5, []bool{false},        false, "normal", ""},
 
 		// Power OFF
-		{"PowerOFF_on",       "Power OFF",  0, []bool{true},         false, "primary", ""},
-		{"PowerOFF_off",      "Power OFF",  0, []bool{false},        false, "dimmed",  " (already off)"},
-		{"PowerOFF_unknown",  "Power OFF",  5, []bool{false},        false, "normal",  ""},
+		{"PowerOFF_on",       "Power OFF",  0, []bool{true},         false, "normal", ""},
+		{"PowerOFF_off",      "Power OFF",  0, []bool{false},        false, "dimmed", " (already off)"},
+		{"PowerOFF_unknown",  "Power OFF",  5, []bool{false},        false, "normal", ""},
 
 		// Click + reset family — only dim when port off
 		{"Click_off",         "Power Click",      0, []bool{false}, false, "dimmed", " (port off)"},
