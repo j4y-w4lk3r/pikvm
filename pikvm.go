@@ -227,14 +227,16 @@ var actions = []action{
 var customScripts = []customScript{
 	{"Boot from ISO", "Select and boot from any available ISO", bootFromISO},
 	{"Setup Ubuntu Server", "Install SSH + Tailscale automation", setupUbuntuServer},
-	{"Boot to BIOS (F7)", "Power on + spam F7 for BIOS entry", bootToBIOS},
-	{"Boot to BIOS (Del)", "Power on + spam Del for BIOS entry", bootToBIOSDel},
-	{"Boot to BIOS (F2)", "Power on + spam F2 for BIOS entry", bootToBIOSF2},
-	{"Boot to BIOS (F3)", "Power on + spam F3 for BIOS entry", bootToBIOSF3},
+	{"Boot to BIOS", "Pick a BIOS key (F7/Del/F2/F12/Esc/...) and spam it", bootToBIOSPlaceholder},
 	{"Type from text.txt", "Type contents of text.txt file", testKeyboard},
 	{"View video stream", "Open PiKVM KVM in browser (video + keyboard/mouse)", viewVideoStream},
 	{"View video (mpv)", "Watch HDMI stream in mpv (needs websocat + mpv)", viewVideoMpv},
 }
+
+// bootToBIOSPlaceholder is wired into customScripts but never actually called:
+// the script-launch handlers detect the "Boot to BIOS" name and pop the
+// modal key picker instead (same pattern as bootFromISO).
+func bootToBIOSPlaceholder(port int) string { return "" }
 
 type portInfo struct {
 	id     int
@@ -271,6 +273,7 @@ type model struct {
 	selectingISO        bool      // true if selecting ISO from list
 	availableISOEntries []isoEntry
 	isoCursor           int
+	selectingBIOSKey    bool      // true if picking a BIOS key (idea #6)
 
 	// --- live state from the WebSocket subscription (Phase 1, idea #1) ---
 	wsConnected bool      // true while the /api/ws subscription is healthy
@@ -600,35 +603,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			if m.selectingISO {
+			switch {
+			case m.selectingISO:
 				m.selectingISO = false
 				m.isoCursor = 0
 				m.result = "ISO selection cancelled"
-			} else if m.focusMode != "" {
+			case m.selectingBIOSKey:
+				m.selectingBIOSKey = false
+				m.result = "BIOS key selection cancelled"
+			case m.focusMode != "":
 				m.focusMode = ""
-			} else {
+			default:
 				m.quitting = true
 				return m, tea.Quit
 			}
 
 		case "e":
-			if !m.selectingISO {
+			if !m.selectingISO && !m.selectingBIOSKey {
 				m.focusMode = "extender"
 			}
 
 		case "p":
-			if !m.selectingISO {
+			if !m.selectingISO && !m.selectingBIOSKey {
 				m.focusMode = "port"
 			}
 
 		case "o":
-			if !m.selectingISO {
+			if !m.selectingISO && !m.selectingBIOSKey {
 				m.focusMode = "ops"
 				m.cursor = 0
 			}
 
 		case "c":
-			if !m.selectingISO {
+			if !m.selectingISO && !m.selectingBIOSKey {
 				m.focusMode = "scripts"
 			}
 
@@ -666,6 +673,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if m.selectingISO {
 				// no digit handling in ISO list
+			} else if m.selectingBIOSKey {
+				digit := int(msg.String()[0] - '0')
+				if digit < 1 || digit > len(biosKeyOptions) {
+					m.result = fmt.Sprintf("\uf071 Pick 1-%d (or ESC)", len(biosKeyOptions))
+					break
+				}
+				opt := biosKeyOptions[digit-1]
+				m.selectingBIOSKey = false
+				m.result = bootToBIOSWithKey(m.port, opt)
 			} else if m.focusMode == "extender" {
 				digit := int(msg.String()[0] - '0')
 				if digit < 1 || digit > m.extenders {
@@ -713,7 +729,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx := digit - 1
 					if idx < len(customScripts) {
 						script := customScripts[idx]
-						if script.name == "Boot from ISO" {
+						switch script.name {
+						case "Boot from ISO":
 							m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
 							entries, err := fetchAvailableISOEntries()
 							if err != nil {
@@ -726,7 +743,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.isoCursor = 0
 								m.result = ""
 							}
-						} else {
+						case "Boot to BIOS":
+							m.selectingBIOSKey = true
+							m.result = ""
+						default:
 							m.result = script.script(m.port)
 						}
 					}
@@ -758,7 +778,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.result = result
 			} else if m.focusMode == "" && m.inScripts {
 				selectedScript := customScripts[m.cursor]
-				if selectedScript.name == "Boot from ISO" {
+				switch selectedScript.name {
+				case "Boot from ISO":
 					m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
 					entries, err := fetchAvailableISOEntries()
 					if err != nil {
@@ -771,7 +792,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.isoCursor = 0
 						m.result = ""
 					}
-				} else {
+				case "Boot to BIOS":
+					m.selectingBIOSKey = true
+					m.result = ""
+				default:
 					m.result = selectedScript.script(m.port)
 				}
 			} else if m.focusMode == "" && !m.inScripts {
@@ -787,6 +811,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	if m.quitting {
 		return successStyle.Render("\n\uf00c Goodbye!\n\n")
+	}
+
+	// BIOS-key picker (idea #6) — shown when a "Boot to BIOS" was selected.
+	if m.selectingBIOSKey {
+		var s strings.Builder
+		s.WriteString("\n")
+		s.WriteString(headerStyle.Render(" \uf132 Choose BIOS key to spam "))
+		s.WriteString("\n\n")
+
+		curExt := m.extenderOf(m.port)
+		curSubPort := m.portOf(m.port)
+		s.WriteString("  " + portInfoStyle.Render(
+			fmt.Sprintf("\uf0e4 Target port: %d.%d   (60 presses over 30s, in parallel with Power ON)",
+				curExt, curSubPort)) + "\n\n")
+
+		// Render two columns of options to keep things tidy.
+		half := (len(biosKeyOptions) + 1) / 2
+		for row := 0; row < half; row++ {
+			line := "  "
+			for col := 0; col < 2; col++ {
+				idx := col*half + row
+				if idx >= len(biosKeyOptions) {
+					continue
+				}
+				opt := biosKeyOptions[idx]
+				cell := fmt.Sprintf("  [%d] %-4s  %s", idx+1, opt.label, biosKeyHint(opt.label))
+				line += lipgloss.NewStyle().Width(36).Render(unselectedStyle.Render(cell))
+			}
+			s.WriteString(line + "\n")
+		}
+		s.WriteString("\n")
+
+		help := helpStyle.Render(fmt.Sprintf("1-%d: pick   ESC: cancel", len(biosKeyOptions)))
+		s.WriteString("  " + help + "\n\n")
+		return s.String()
 	}
 
 	// ISO Selection Mode
@@ -1099,73 +1158,71 @@ func isSpecialKey(key string) bool {
 	return specialKeys[key]
 }
 
-// Custom script implementations
-func bootToBIOS(port int) string {
-	// Start spamming F7 IMMEDIATELY in background (doesn't wait!)
-	go func() {
-		for i := 0; i < 60; i++ {
-			sendKey("F7")
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
+// ----------------------------------------------------------------------------
+// Boot-to-BIOS (roadmap idea #6)
+//
+// Generic key-spammer: power-cycles a port and pounds the chosen BIOS key
+// at 2 Hz for 30s in a background goroutine, so the boot screen always
+// catches it. Replaces the four hand-coded wrappers (bootToBIOS{,Del,F2,F3})
+// — every key plus a few extras (F12, Esc, F8, F11, F1) is now a single-key
+// picker entry shown by selectingBIOSKey mode.
+// ----------------------------------------------------------------------------
 
-	// Power on immediately (happens in parallel with F7 spam)
-	act := action{"Power ON", "", "/switch/atx/power?port=%d&action=on", "POST"}
-	executeAction(act, port)
-
-	// Return immediately - don't wait!
-	return fmt.Sprintf("\uf00c F7 spam started! (60 presses over 30s) + Powered on port %d", port+1)
+type biosKeyOption struct {
+	label string // shown in the picker (kept short)
+	key   string // value passed to sendKey() / PiKVM HID API
 }
 
-func bootToBIOSDel(port int) string {
-	// Start spamming Delete IMMEDIATELY
-	go func() {
-		for i := 0; i < 60; i++ {
-			sendKey("Delete")
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
-
-	// Power on in parallel
-	act := action{"Power ON", "", "/switch/atx/power?port=%d&action=on", "POST"}
-	executeAction(act, port)
-
-	// Return immediately
-	return fmt.Sprintf("\uf00c Delete spam started! (60 presses over 30s) + Powered on port %d", port+1)
+// Order matters — these are picked by digits 1..9.
+var biosKeyOptions = []biosKeyOption{
+	{"F7", "F7"},     // Dell, HP boot menu
+	{"Del", "Delete"}, // ASUS, MSI BIOS setup
+	{"F2", "F2"},     // Lenovo, Acer BIOS setup
+	{"F3", "F3"},
+	{"F12", "F12"},   // Dell boot menu, generic boot order
+	{"Esc", "Escape"}, // HP boot menu, some Lenovo
+	{"F8", "F8"},     // older boot menu shortcut
+	{"F11", "F11"},   // Asrock, some Gigabyte
+	{"F1", "F1"},
 }
 
-func bootToBIOSF2(port int) string {
-	// Start spamming F2 IMMEDIATELY
-	go func() {
-		for i := 0; i < 60; i++ {
-			sendKey("F2")
-			time.Sleep(500 * time.Millisecond)
-		}
-	}()
-
-	// Power on in parallel
-	act := action{"Power ON", "", "/switch/atx/power?port=%d&action=on", "POST"}
-	executeAction(act, port)
-
-	// Return immediately
-	return fmt.Sprintf("\uf00c F2 spam started! (60 presses over 30s) + Powered on port %d", port+1)
+// biosKeyHint returns a short vendor cheat-sheet shown next to each option in
+// the picker. Empty for keys without a well-known mapping.
+func biosKeyHint(label string) string {
+	switch label {
+	case "F7":
+		return "(Dell, HP boot menu)"
+	case "Del":
+		return "(ASUS, MSI BIOS setup)"
+	case "F2":
+		return "(Lenovo, Acer BIOS setup)"
+	case "F12":
+		return "(Dell boot menu, generic)"
+	case "Esc":
+		return "(HP boot menu, some Lenovo)"
+	case "F11":
+		return "(Asrock, some Gigabyte)"
+	case "F8":
+		return "(older boot menu)"
+	}
+	return ""
 }
 
-func bootToBIOSF3(port int) string {
-	// Start spamming F3 IMMEDIATELY
+// bootToBIOSWithKey power-cycles the port and spams the requested key for ~30s.
+func bootToBIOSWithKey(port int, opt biosKeyOption) string {
 	go func() {
 		for i := 0; i < 60; i++ {
-			sendKey("F3")
+			sendKey(opt.key)
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 
-	// Power on in parallel
+	// Power on in parallel with the key spam — catches the boot screen
+	// from frame 1 instead of racing it.
 	act := action{"Power ON", "", "/switch/atx/power?port=%d&action=on", "POST"}
 	executeAction(act, port)
 
-	// Return immediately
-	return fmt.Sprintf("\uf00c F3 spam started! (60 presses over 30s) + Powered on port %d", port+1)
+	return fmt.Sprintf("\uf00c %s spam started! (60 presses over 30s) + Powered on port %d", opt.label, port+1)
 }
 
 // Helper function to type a sudo command with password automation

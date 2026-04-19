@@ -35,7 +35,7 @@ Each port gets a JSON object: `name`, `bios_key`, `default_iso`, `tags`, `tailsc
 
 **Why early:** Ideas 6, 7, 11, 13, 14, 22, 25 all build on this.
 
-### 6. `[ ]` Smart "Boot to BIOS" — collapse 4 menu entries into 1
+### 6. `[x]` Smart "Boot to BIOS" — collapse 4 menu entries into 1
 Use the per-port `bios_key` from idea 5. If unset, show a small key picker: `[F7] [Del] [F2] [F3] [F12] [Esc]`. Saves four menu lines, generalizes to any keystroke.
 
 ### 9. `[ ]` Dim / disable inapplicable actions
