@@ -199,6 +199,13 @@ var (
 	// Divider style
 	dividerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#333333"))
+
+	// Dimmed-action style (idea #9): used for operations that are visually
+	// indicated as redundant or ineffective for the current port state, e.g.
+	// "Power OFF" when the port is already off. Operation is still runnable
+	// — the dim is purely a hint.
+	dimmedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555555"))
 )
 
 type action struct {
@@ -360,6 +367,60 @@ func (m model) portOf(linear int) int { return linear%m.portsPerExt + 1 }
 
 // linearPort builds a linear port index from 1-based extender + 1-based port.
 func (m model) linearPort(ext, port int) int { return (ext-1)*m.portsPerExt + (port - 1) }
+
+// opVisualState describes how an operation should be rendered given the live
+// state of the currently-selected port (idea #9):
+//
+//	"primary": the most likely useful action (Power ON when port is off,
+//	           Power OFF when port is on) — rendered bold pastel green.
+//	"dimmed":  redundant or ineffective right now (Power ON when port is
+//	           already on, Reset Click when port is off, Disconnect Drive
+//	           when nothing is mounted) — rendered very dim grey.
+//	"normal":  no opinion, render in default unselected color.
+//
+// suffix is an optional parenthetical hint shown after the action name (e.g.
+// "Power OFF (already off)") so the user understands at a glance WHY it's
+// dimmed without having to know the convention.
+//
+// Cursor focus styling in the View always wins — the user can still run a
+// dimmed op if they want; the dim is a hint, not enforcement.
+func (m model) opVisualState(name string) (state, suffix string) {
+	portKnown := m.port < len(m.powerLeds)
+	portOn := portKnown && m.powerLeds[m.port]
+
+	switch name {
+	case "Power ON":
+		if !portKnown {
+			return "normal", ""
+		}
+		if portOn {
+			return "dimmed", " (already on)"
+		}
+		return "primary", ""
+
+	case "Power OFF":
+		if !portKnown {
+			return "normal", ""
+		}
+		if !portOn {
+			return "dimmed", " (already off)"
+		}
+		return "primary", ""
+
+	case "Power Click", "Power Long Press", "Reset Click", "Reset Long Press":
+		if portKnown && !portOn {
+			return "dimmed", " (port off)"
+		}
+		return "normal", ""
+
+	case "Disconnect Drive":
+		if !m.msdConnect {
+			return "dimmed", " (no drive attached)"
+		}
+		return "normal", ""
+	}
+	return "normal", ""
+}
 
 // trySetActive switches the PiKVM active port and updates m.activePort on success.
 // Failures are non-fatal (still update m.port locally) but recorded in m.result via caller.
@@ -963,18 +1024,32 @@ func (m model) View() string {
 	left.WriteString(legend + "\n")
 	left.WriteString("\n")
 
-	// [O] Operations
+	// [O] Operations — styling per row reflects live applicability (idea #9):
+	//   primary  = suggested next action (e.g. Power ON when port is off)
+	//   dimmed   = redundant or ineffective right now (Power ON when on)
+	//   normal   = no live signal / not state-dependent
+	// Cursor focus highlighting always wins so the user can still run a
+	// dimmed op explicitly.
 	if m.focusMode == "ops" {
 		left.WriteString("  " + selectedStyle.Render("[O] Operations (1-7 select, Enter run):") + "\n")
 	} else {
 		left.WriteString("  " + unselectedStyle.Render("[O] Operations:") + "\n")
 	}
 	for i, act := range actions {
-		if m.focusMode == "ops" && m.cursor == i {
-			left.WriteString("  " + selectedStyle.Render(fmt.Sprintf("  [%d] %s", i+1, act.name)) + "\n")
-		} else {
-			left.WriteString("  " + unselectedStyle.Render(fmt.Sprintf("  [%d] %s", i+1, act.name)) + "\n")
+		state, suffix := m.opVisualState(act.name)
+		line := fmt.Sprintf("  [%d] %s%s", i+1, act.name, suffix)
+		var rendered string
+		switch {
+		case m.focusMode == "ops" && m.cursor == i:
+			rendered = selectedStyle.Render(line)
+		case state == "primary":
+			rendered = successStyle.Render(line)
+		case state == "dimmed":
+			rendered = dimmedStyle.Render(line)
+		default:
+			rendered = unselectedStyle.Render(line)
 		}
+		left.WriteString("  " + rendered + "\n")
 	}
 
 	leftCol := lipgloss.NewStyle().Width(leftWidth).Render(left.String())

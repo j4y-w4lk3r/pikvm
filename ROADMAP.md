@@ -38,7 +38,7 @@ Each port gets a JSON object: `name`, `bios_key`, `default_iso`, `tags`, `tailsc
 ### 6. `[x]` Smart "Boot to BIOS" — collapse 4 menu entries into 1
 Use the per-port `bios_key` from idea 5. If unset, show a small key picker: `[F7] [Del] [F2] [F3] [F12] [Esc]`. Saves four menu lines, generalizes to any keystroke.
 
-### 9. `[ ]` Dim / disable inapplicable actions
+### 9. `[x]` Dim / disable inapplicable actions
 If `summary.synced == false`, dim port-dependent ops. If `power_leds[port] == true`, dim "Power ON" and bold "Power OFF". Reduces accidental no-ops and makes intent obvious.
 
 ### 10. `[ ]` Continuous status bar at the bottom
