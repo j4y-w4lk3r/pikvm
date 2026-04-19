@@ -2,6 +2,8 @@
 
 Control your PiKVM ATX power management with a beautiful TUI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
+> **Where we're going next:** see [`ROADMAP.md`](ROADMAP.md) for the prioritized backlog (live WebSocket state, grid view, snapshot dashboard, AI BIOS pilot, one-shot bare-metal provisioning, and 20+ more).
+
 ## Table of Contents
 
 - [Requirements](#requirements)
