@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -309,12 +311,21 @@ func decodeAtxEvent(raw json.RawMessage) (wsAtxMsg, bool) {
 	}, true
 }
 
+// lastMsdImageSet tracks the most recent set of ISO filenames PiKVM reported
+// in storage.images. When this set changes between two MSD events, we
+// invalidate the ISO cache so the next "Boot from ISO" open picks up the new
+// list (e.g. after an upload from the web UI). Only changes to the image set
+// itself trigger invalidation — busy/connected/upload-progress flicker is
+// ignored.
+var lastMsdImageSet string
+
 func decodeMsdEvent(raw json.RawMessage) (wsMsdMsg, bool) {
 	var parsed struct {
 		Online  bool `json:"online"`
 		Busy    bool `json:"busy"`
 		Storage struct {
-			Parts map[string]struct {
+			Images map[string]json.RawMessage `json:"images"`
+			Parts  map[string]struct {
 				Size int64 `json:"size"`
 				Free int64 `json:"free"`
 			} `json:"parts"`
@@ -332,6 +343,21 @@ func decodeMsdEvent(raw json.RawMessage) (wsMsdMsg, bool) {
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return wsMsdMsg{}, false
+	}
+
+	// Build a deterministic fingerprint of the image names; if it changed
+	// since the last MSD event, invalidate the ISO cache (Phase 1 idea #2).
+	if len(parsed.Storage.Images) > 0 {
+		names := make([]string, 0, len(parsed.Storage.Images))
+		for k := range parsed.Storage.Images {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		fingerprint := strings.Join(names, "\x00")
+		if fingerprint != lastMsdImageSet {
+			lastMsdImageSet = fingerprint
+			invalidateISOCache()
+		}
 	}
 
 	msg := wsMsdMsg{

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -1393,40 +1394,137 @@ func getISODir() string {
 	return filepath.Join(".", "iso")
 }
 
-// fetchAvailableISOEntries returns ISOs on PiKVM plus local .iso files from the iso/ folder.
+// ----------------------------------------------------------------------------
+// ISO listing — parallel fetch + 30s TTL cache (roadmap idea #2).
+//
+// fetchAvailableISOEntries() is called whenever the user opens the
+// "Boot from ISO" menu. It pulls from two independent sources:
+//
+//   1. PiKVM's mass-storage device  (HTTP GET /api/msd, ~500 ms LAN, more on
+//      Tailscale) for ISOs already uploaded to the unit.
+//   2. The local ./iso/ directory   (filesystem ReadDir, ~tens of ms) for
+//      files staged on disk that we can upload + boot.
+//
+// Both queries are independent, so we run them concurrently. Results are
+// memoized in isoCache for cacheTTL; the second open is instant. The cache
+// is invalidated automatically whenever the WS sees the MSD storage change
+// (e.g. someone uploaded an ISO from the web UI), so the cache never serves
+// stale data — it just absorbs back-to-back menu opens.
+//
+// Per-source failures are tolerated: if PiKVM is unreachable we still return
+// the local entries, and vice-versa. Only an "everything failed" call
+// returns an error.
+// ----------------------------------------------------------------------------
+
+const isoCacheTTL = 30 * time.Second
+
+type isoCacheEntry struct {
+	entries   []isoEntry
+	fetchedAt time.Time
+}
+
+var (
+	isoCacheMu sync.Mutex
+	isoCache   *isoCacheEntry
+)
+
+// invalidateISOCache forces the next fetchAvailableISOEntries call to refetch.
+// Called from the WS msd reducer whenever the storage image list changes.
+func invalidateISOCache() {
+	isoCacheMu.Lock()
+	isoCache = nil
+	isoCacheMu.Unlock()
+}
+
+// fetchAvailableISOEntries returns ISOs on PiKVM plus local .iso files from
+// the iso/ folder. PiKVM and local sources are scanned in parallel; results
+// are cached for isoCacheTTL.
 func fetchAvailableISOEntries() ([]isoEntry, error) {
-	var entries []isoEntry
-	// 1) ISOs already on PiKVM
-	onPiKVM, err := fetchAvailableISOs()
-	if err != nil {
-		return nil, err
+	// Fast path: serve from cache if fresh.
+	isoCacheMu.Lock()
+	if isoCache != nil && time.Since(isoCache.fetchedAt) < isoCacheTTL {
+		entries := isoCache.entries
+		isoCacheMu.Unlock()
+		return entries, nil
 	}
-	for _, name := range onPiKVM {
-		entries = append(entries, isoEntry{Display: name, Name: name, LocalPath: ""})
-	}
-	// 2) Local iso/ folder (e.g. ./iso or next to binary)
-	isoDir := getISODir()
-	dirEntries, err := os.ReadDir(isoDir)
-	if err != nil {
-		return entries, nil // no local folder is ok
-	}
-	for _, e := range dirEntries {
-		if e.IsDir() {
-			continue
+	isoCacheMu.Unlock()
+
+	var (
+		wg            sync.WaitGroup
+		pikvmEntries  []isoEntry
+		localEntries  []isoEntry
+		pikvmErr      error
+		localErr      error
+	)
+
+	// Source 1: PiKVM /api/msd
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		names, err := fetchAvailableISOs()
+		if err != nil {
+			pikvmErr = err
+			return
 		}
-		name := e.Name()
-		if strings.HasSuffix(strings.ToLower(name), ".iso") {
+		for _, name := range names {
+			pikvmEntries = append(pikvmEntries, isoEntry{Display: name, Name: name, LocalPath: ""})
+		}
+	}()
+
+	// Source 2: local ./iso/ directory
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		isoDir := getISODir()
+		dirEntries, err := os.ReadDir(isoDir)
+		if err != nil {
+			// No iso/ folder is fine — not an error, just an empty list.
+			if !os.IsNotExist(err) {
+				localErr = err
+			}
+			return
+		}
+		for _, e := range dirEntries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(strings.ToLower(name), ".iso") {
+				continue
+			}
 			fullPath := filepath.Join(isoDir, name)
 			if abs, err := filepath.Abs(fullPath); err == nil {
 				fullPath = abs
 			}
-			entries = append(entries, isoEntry{
+			localEntries = append(localEntries, isoEntry{
 				Display:   name + " (local)",
 				Name:      name,
 				LocalPath: fullPath,
 			})
 		}
+	}()
+
+	wg.Wait()
+
+	// Combine — order: PiKVM-side first (they're already uploaded and ready
+	// to mount), then local files (which need uploading first).
+	entries := make([]isoEntry, 0, len(pikvmEntries)+len(localEntries))
+	entries = append(entries, pikvmEntries...)
+	entries = append(entries, localEntries...)
+
+	// Only fail when both sources failed — partial success is more useful
+	// than no result.
+	if len(entries) == 0 && pikvmErr != nil && localErr != nil {
+		return nil, fmt.Errorf("PiKVM: %v; local: %v", pikvmErr, localErr)
 	}
+	if len(entries) == 0 && pikvmErr != nil {
+		return nil, pikvmErr
+	}
+
+	isoCacheMu.Lock()
+	isoCache = &isoCacheEntry{entries: entries, fetchedAt: time.Now()}
+	isoCacheMu.Unlock()
+
 	return entries, nil
 }
 
