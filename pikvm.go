@@ -191,86 +191,149 @@ type isoEntry struct {
 	LocalPath string // non-empty if local file (upload first)
 }
 
-// focusMode: which menu is active for number-key input. "" = none, "port" = extenders/ports, "ops" = operations, "scripts" = custom scripts
+// focusMode: which menu is active for number-key input.
+//
+//	""         = none
+//	"extender" = picking extender 1..Extenders
+//	"port"     = picking port 1..PortsPerExt on the current extender
+//	"ops"      = operations
+//	"scripts"  = custom scripts
 type model struct {
 	cursor              int
-	port                int
+	port                int        // linear port (0-based), e.g. 5 = extender 2 / port 2
+	extenders           int        // number of extender units (e.g. 2)
+	portsPerExt         int        // ports per extender (e.g. 4)
+	totalPorts          int        // extenders * portsPerExt
+	activePort          int        // last known PiKVM-side active port (linear, 0-based)
 	result              string
 	quitting            bool
 	availablePorts      []portInfo
 	portsDetected       bool
-	focusMode           string    // "port" | "ops" | "scripts" | ""
-	inScripts           bool      // true if cursor is in custom scripts (legacy, used when navigating with arrows)
+	focusMode           string
+	inScripts           bool      // true if cursor is in custom scripts (used when navigating with arrows)
 	selectingISO        bool      // true if selecting ISO from list
 	availableISOEntries []isoEntry
 	isoCursor           int
-	pendingPortDigit    int
 }
 
 func initialModel() model {
 	fmt.Printf("🔌 Connecting to PiKVM at: %s\n", pikvmHost)
-	fmt.Printf("🔍 Detecting available ports...\n")
+	fmt.Printf("🔍 Fetching switch state...\n")
+	state := fetchSwitchState()
 	return model{
 		cursor:         0,
-		port:           0,
-		availablePorts: detectPorts(),
+		port:           state.ActivePort,
+		extenders:      state.Extenders,
+		portsPerExt:    state.PortsPerExt,
+		totalPorts:     state.TotalPorts,
+		activePort:     state.ActivePort,
+		availablePorts: state.Available,
 		portsDetected:  true,
 		inScripts:      false,
 	}
+}
+
+// extenderOf returns the 1-based extender for a linear port.
+func (m model) extenderOf(linear int) int { return linear/m.portsPerExt + 1 }
+
+// portOf returns the 1-based port (within the extender) for a linear port.
+func (m model) portOf(linear int) int { return linear%m.portsPerExt + 1 }
+
+// linearPort builds a linear port index from 1-based extender + 1-based port.
+func (m model) linearPort(ext, port int) int { return (ext-1)*m.portsPerExt + (port - 1) }
+
+// trySetActive switches the PiKVM active port and updates m.activePort on success.
+// Failures are non-fatal (still update m.port locally) but recorded in m.result via caller.
+func (m *model) trySetActive(linear int) error {
+	if err := setSwitchPort(linear); err != nil {
+		return err
+	}
+	m.activePort = linear
+	return nil
 }
 
 func (m model) Init() tea.Cmd {
 	return nil
 }
 
-// detectPorts queries the PiKVM API to find available ports
-func detectPorts() []portInfo {
-	var ports []portInfo
-
-	// Try ports 0-15 (common range for PiKVM extenders)
-	for i := 0; i < 16; i++ {
-		if testPort(i) {
-			ports = append(ports, portInfo{id: i, active: true})
-		}
-	}
-
-	// If no ports detected, default to port 0
-	if len(ports) == 0 {
-		ports = append(ports, portInfo{id: 0, active: true})
-	}
-
-	return ports
+// switchState describes the PiKVM switch topology and current active port.
+// Linear port indexing is used everywhere internally:
+//
+//	linearPort = (extender-1) * portsPerExt + (port-1)   // both 1-based
+//	            = unit * portsPerExt + channel           // both 0-based
+type switchState struct {
+	Extenders   int        // number of extender units (e.g. 2)
+	PortsPerExt int        // ports per extender (typically 4)
+	TotalPorts  int        // Extenders * PortsPerExt
+	ActivePort  int        // currently-active linear port (0-based)
+	Available   []portInfo // every existing linear port
 }
 
-// testPort checks if a port is available by making a test API call
-func testPort(port int) bool {
-	endpoint := fmt.Sprintf("/switch/atx/power?port=%d&action=on", port)
-	url := baseURL + endpoint
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   1 * time.Second, // 1 second timeout
+// fetchSwitchState queries /api/switch once and returns the topology.
+// This replaces the old brute-force detectPorts() that did 16 HEAD requests.
+// On error we fall back to a single-extender / single-port assumption so the
+// TUI still launches and shows a useful message via Refresh.
+func fetchSwitchState() switchState {
+	state := switchState{
+		Extenders: 1, PortsPerExt: 1, TotalPorts: 1,
+		Available: []portInfo{{id: 0, active: true}},
 	}
 
-	req, err := http.NewRequest("HEAD", url, nil)
+	url := baseURL + "/switch"
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return false
+		return state
 	}
-
 	req.SetBasicAuth(pikvmUser, pikvmPass)
-
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return state
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 
-	// If we get a 200 or 405 (Method Not Allowed), the port exists
-	// 404 means the port doesn't exist
-	return resp.StatusCode != 404
+	var parsed struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Model struct {
+				Ports []struct {
+					ID      string `json:"id"`
+					Channel int    `json:"channel"`
+					Unit    int    `json:"unit"`
+				} `json:"ports"`
+				Units []json.RawMessage `json:"units"`
+			} `json:"model"`
+			Summary struct {
+				ActivePort int    `json:"active_port"`
+				ActiveID   string `json:"active_id"`
+				Synced     bool   `json:"synced"`
+			} `json:"summary"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || !parsed.OK {
+		return state
+	}
+
+	units := len(parsed.Result.Model.Units)
+	total := len(parsed.Result.Model.Ports)
+	if units == 0 || total == 0 {
+		return state
+	}
+
+	state.Extenders = units
+	state.TotalPorts = total
+	state.PortsPerExt = total / units
+	if state.PortsPerExt == 0 {
+		state.PortsPerExt = 1
+	}
+	state.ActivePort = parsed.Result.Summary.ActivePort
+	state.Available = state.Available[:0]
+	for i := 0; i < total; i++ {
+		state.Available = append(state.Available, portInfo{id: i, active: true})
+	}
+	return state
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -288,7 +351,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.result = "ISO selection cancelled"
 			} else if m.focusMode != "" {
 				m.focusMode = ""
-				m.pendingPortDigit = 0
 			} else {
 				m.quitting = true
 				return m, tea.Quit
@@ -296,8 +358,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "e":
 			if !m.selectingISO {
+				m.focusMode = "extender"
+			}
+
+		case "p":
+			if !m.selectingISO {
 				m.focusMode = "port"
-				m.pendingPortDigit = 0
 			}
 
 		case "o":
@@ -312,7 +378,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "up", "k":
-			m.pendingPortDigit = 0
 			if m.selectingISO {
 				if m.isoCursor > 0 {
 					m.isoCursor--
@@ -327,7 +392,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
-			m.pendingPortDigit = 0
 			if m.selectingISO {
 				if m.isoCursor < len(m.availableISOEntries)-1 {
 					m.isoCursor++
@@ -347,32 +411,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if m.selectingISO {
 				// no digit handling in ISO list
+			} else if m.focusMode == "extender" {
+				digit := int(msg.String()[0] - '0')
+				if digit < 1 || digit > m.extenders {
+					m.result = fmt.Sprintf("\uf071 Only %d extender(s) available (press 1-%d)", m.extenders, m.extenders)
+					break
+				}
+				curSubPort := m.portOf(m.port)
+				newPort := m.linearPort(digit, curSubPort)
+				if !isPortAvailable(newPort, m.availablePorts) {
+					m.result = fmt.Sprintf("\uf071 Port %d.%d not available", digit, curSubPort)
+					break
+				}
+				m.port = newPort
+				if err := m.trySetActive(newPort); err != nil {
+					m.result = fmt.Sprintf("\uf00c Extender %d selected (port %d.%d). \uf071 set_active: %v", digit, digit, curSubPort, err)
+				} else {
+					m.result = fmt.Sprintf("\uf00c Extender %d selected → active port %d.%d", digit, digit, curSubPort)
+				}
 			} else if m.focusMode == "port" {
 				digit := int(msg.String()[0] - '0')
-				var internalPort int
-				applyPort := true
-				if m.pendingPortDigit == 1 {
-					m.pendingPortDigit = 0
-					if digit == 0 {
-						internalPort = 9
-					} else if digit >= 1 && digit <= 6 {
-						internalPort = 9 + digit
-					} else {
-						internalPort = 0
-					}
-				} else if digit == 1 {
-					m.pendingPortDigit = 1
-					applyPort = false
-				} else if digit == 0 {
-					internalPort = 9
-				} else {
-					internalPort = digit - 1
+				if digit < 1 || digit > m.portsPerExt {
+					m.result = fmt.Sprintf("\uf071 Only ports 1-%d on extender %d (press 1-%d)", m.portsPerExt, m.extenderOf(m.port), m.portsPerExt)
+					break
 				}
-				if applyPort && isPortAvailable(internalPort, m.availablePorts) {
-					m.port = internalPort
-					m.result = fmt.Sprintf("\uf00c Port set to: %d", internalPort+1)
-				} else if applyPort {
-					m.result = fmt.Sprintf("\uf071 Port %d is not available", internalPort+1)
+				curExt := m.extenderOf(m.port)
+				newPort := m.linearPort(curExt, digit)
+				if !isPortAvailable(newPort, m.availablePorts) {
+					m.result = fmt.Sprintf("\uf071 Port %d.%d not available", curExt, digit)
+					break
+				}
+				m.port = newPort
+				if err := m.trySetActive(newPort); err != nil {
+					m.result = fmt.Sprintf("\uf00c Port %d.%d selected. \uf071 set_active: %v", curExt, digit, err)
+				} else {
+					m.result = fmt.Sprintf("\uf00c Port %d.%d → now active on PiKVM", curExt, digit)
 				}
 			} else if m.focusMode == "ops" {
 				digit := int(msg.String()[0] - '0')
@@ -408,9 +481,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			if !m.selectingISO {
-				// Refresh port detection
-				m.availablePorts = detectPorts()
-				m.result = fmt.Sprintf("\uf00c Refreshed - found %d port(s)", len(m.availablePorts))
+				state := fetchSwitchState()
+				m.extenders = state.Extenders
+				m.portsPerExt = state.PortsPerExt
+				m.totalPorts = state.TotalPorts
+				m.activePort = state.ActivePort
+				m.availablePorts = state.Available
+				m.result = fmt.Sprintf("\uf00c Refreshed: %d extender(s) × %d port(s)  │  PiKVM active: %d.%d",
+					state.Extenders, state.PortsPerExt,
+					state.ActivePort/state.PortsPerExt+1, state.ActivePort%state.PortsPerExt+1)
 			}
 
 		case "enter", " ":
@@ -497,19 +576,60 @@ func (m model) View() string {
 	left.WriteString(headerStyle.Render(" \uf0e7 PiKVM ATX Power Control "))
 	left.WriteString("\n\n")
 
-	// [E] Extenders / current port only
-	extenders := (len(m.availablePorts) + 3) / 4
-	portLine := fmt.Sprintf("\uf519 Extenders: %d  │  Port: %d", extenders, m.port+1)
-	if isPortAvailable(m.port, m.availablePorts) {
-		portLine += " " + successStyle.Render("\uf058")
+	// [E] Extender row: [1] [2]
+	curExt := m.extenderOf(m.port)
+	curSubPort := m.portOf(m.port)
+
+	var extRow strings.Builder
+	if m.focusMode == "extender" {
+		extRow.WriteString(selectedStyle.Render("[E] Extender:"))
 	} else {
-		portLine += " " + warningStyle.Render("\uf06a")
+		extRow.WriteString(unselectedStyle.Render("[E] Extender:"))
 	}
+	for i := 1; i <= m.extenders; i++ {
+		extRow.WriteString(" ")
+		label := fmt.Sprintf("[%d]", i)
+		switch {
+		case i == curExt && m.focusMode == "extender":
+			extRow.WriteString(selectedStyle.Render(label))
+		case i == curExt:
+			extRow.WriteString(successStyle.Render(label))
+		default:
+			extRow.WriteString(unselectedStyle.Render(label))
+		}
+	}
+	left.WriteString("  " + extRow.String() + "\n")
+
+	// [P] Port row: [1] [2] [3] [4]
+	var portRow strings.Builder
 	if m.focusMode == "port" {
-		left.WriteString("  " + selectedStyle.Render("[E] ") + portInfoStyle.Render(portLine) + "\n")
+		portRow.WriteString(selectedStyle.Render("[P] Port:    "))
 	} else {
-		left.WriteString("  " + unselectedStyle.Render("[E] ") + portInfoStyle.Render(portLine) + "\n")
+		portRow.WriteString(unselectedStyle.Render("[P] Port:    "))
 	}
+	for i := 1; i <= m.portsPerExt; i++ {
+		portRow.WriteString(" ")
+		label := fmt.Sprintf("[%d]", i)
+		switch {
+		case i == curSubPort && m.focusMode == "port":
+			portRow.WriteString(selectedStyle.Render(label))
+		case i == curSubPort:
+			portRow.WriteString(successStyle.Render(label))
+		default:
+			portRow.WriteString(unselectedStyle.Render(label))
+		}
+	}
+	left.WriteString("  " + portRow.String() + "\n")
+
+	// Active-port summary
+	activeExt := m.activePort/m.portsPerExt + 1
+	activePortNum := m.activePort%m.portsPerExt + 1
+	syncIcon := successStyle.Render("\uf058")
+	if m.activePort != m.port {
+		syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + fmt.Sprintf("%d.%d", activeExt, activePortNum) + ")"
+	}
+	summary := fmt.Sprintf("\uf0e4 Selected: %d.%d  ", curExt, curSubPort)
+	left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
 	left.WriteString("\n")
 
 	// [O] Operations
@@ -555,7 +675,7 @@ func (m model) View() string {
 	// Help and result below
 	var bottom strings.Builder
 	bottom.WriteString("\n  ")
-	bottom.WriteString(helpStyle.Render("e: Ports  o: Operations  c: Scripts  1-9/Enter   ESC: back   r: Refresh   q: Quit"))
+	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Refresh  q: Quit"))
 	bottom.WriteString("\n")
 	if m.result != "" {
 		bottom.WriteString("\n  ")

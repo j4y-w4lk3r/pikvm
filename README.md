@@ -32,9 +32,9 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 ## Features
 
 ✅ **Single Binary** - No dependencies, just run it  
-✅ **Auto-Detection** - Automatically detects connected extenders and available ports  
-✅ **Port Selection** - Choose from available ports (validates availability)  
-✅ **Simple & Clean TUI** - Compact design with pastel green highlighting  
+✅ **Auto-Detection** - One `GET /api/switch` call detects extenders, ports, and current active port  
+✅ **Modal Port Selection** - `e` picks extender (1-2), `p` picks port (1-4); auto-syncs PiKVM `set_active`  
+✅ **Simple & Clean TUI** - Compact two-column design with pastel green highlighting  
 ✅ **Visual Highlighting** - Selected option in bold pastel green (#9bf09d)  
 ✅ **Color-coded Messages** - Success (green), warnings (orange), errors (red)  
 ✅ **Compact Layout** - Action and description on one line  
@@ -42,7 +42,7 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 ✅ **All Actions** - Power on/off, short/long press, reset  
 ✅ **Custom Scripts** - Automated sequences (e.g., boot to BIOS with F7 spam)  
 ✅ **Keyboard Control** - Send keys via PiKVM HID  
-✅ **Real-time Refresh** - Press 'r' to re-detect ports
+✅ **Real-time Refresh** - Press 'r' to re-fetch switch state from PiKVM
 
 ---
 
@@ -158,33 +158,44 @@ Optional flags: `--pikvm-port`, `--no-stream-keeper`, `--warmup`, `--snapshot-qu
 
 ## TUI Interface
 
-Compact and simple design with Unicode symbols:
+Compact two-column layout. Extender and port pickers are split so a multi-extender PiKVM (e.g. 2 × 4 ports) shows clean rows of `[1] [2]` and `[1] [2] [3] [4]` instead of one big "Port 1-8" line:
 
 ```
 ╭──────────────────────────────╮
 │ ⚡ PiKVM ATX Power Control   │
 ╰──────────────────────────────╯
 
-  ▶ Extenders: 1  │  Available Ports: 0, 1, 2, 3
+  [E] Extender: [1] [2]
+  [P] Port:     [1] [2] [3] [4]
+  󰈎 Selected: 2.4   ✓
 
-  ● Current Port: 0 ✓
+  [O] Operations:                       [C] Custom Scripts:
+    [1] Power ON                          [1] Boot from ISO
+    [2] Power OFF                         [2] Setup Ubuntu Server
+    [3] Power Click                       [3] Boot to BIOS (F7)
+    [4] Power Long Press                  [4] Boot to BIOS (Del)
+    [5] Reset Click                       ...
+    [6] Reset Long Press
+    [7] Disconnect Drive
 
-  [1] Power ON (Turn power on)
-  [2] Power OFF (Turn power off)
-  [3] Power Click (Power button short press)
-  [4] Power Long Press (Force shutdown)
-  [5] Reset Click (Reset button short press)
-  [6] Reset Long Press (Reset button long press)
-  [7] Disconnect Drive (Disconnect virtual USB drive)
-
-   Custom Scripts:
-
-  [ 1] Boot to BIOS (F7) (Power on + spam F7 for BIOS entry)
-  [ 2] Boot to BIOS (Del) (Power on + spam Del for BIOS entry)
-  [ 3] Boot to BIOS (F2) (Power on + spam F2 for BIOS entry)  ← Selected
-
-  ↑/↓/k/j: Navigate  │  ⏎: Execute  │  #: Port  │  ⟳: Refresh  │  ✕: Quit
+  e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Refresh  q: Quit
 ```
+
+### Selecting an extender / port
+
+The TUI is **modal**: you press a letter to focus a section, then digits to pick within it. ESC exits the section.
+
+| Action                                  | Keys                |
+| --------------------------------------- | ------------------- |
+| Switch to extender 2                    | `e` then `2`        |
+| Switch to port 3 on the current extender | `p` then `3`        |
+| Both at once (e.g. extender 2 / port 1) | `e 2` then `p 1`    |
+| Run an operation (Power ON, etc.)       | `o` then `1`-`7`    |
+| Run a custom script                     | `c` then `1`-`9`    |
+| Refresh switch state from PiKVM         | `r`                 |
+| Cancel current section / quit           | `ESC` or `q`        |
+
+When you change extender or port, the TUI **automatically calls** `POST /api/switch/set_active` so video/USB/HID immediately follow your selection on the PiKVM. The status line shows `✓` when your selection matches what PiKVM reports as active, or a warning if they're out of sync.
 
 ### Symbols Used:
 - ⚡ Lightning - Power/Energy
@@ -202,13 +213,13 @@ Compact and simple design with Unicode symbols:
 The selected item is shown in **bold pastel green text (#9bf09d)** - no boxes, no arrows, just clean highlighting.
 
 ### TUI Features:
-- **Compact layout** - All info on one line per action
-- **Auto-detect extenders** - Shows how many extenders are connected
-- **Port validation** - Only allows selecting available ports
-- **Visual indicators** - 🟢 for available port, ⚠️ for unavailable
-- **Simple highlighting** - Selected item in pastel green (#9bf09d), no boxes or arrows
-- **Clean design** - Minimal and easy to read
-- **Live refresh** - Press 'r' to re-scan for ports
+- **Two-column layout** - Operations on the left, custom scripts on the right
+- **Split extender / port pickers** - One row per concept: `[E] Extender: [1] [2]` and `[P] Port: [1] [2] [3] [4]`
+- **Fast startup** - Topology is fetched in one `GET /api/switch` call (~0.5s) instead of 16 brute-force probes
+- **Auto-sync video** - Selecting an extender or port immediately calls `POST /api/switch/set_active`
+- **Sync indicator** - `✓` when local selection matches PiKVM, `⚠` (with PiKVM-side port) when out of sync
+- **Simple highlighting** - Focused section in pastel green (#9bf09d)
+- **Live refresh** - Press `r` to re-fetch the switch state
 - **Color feedback** - Success (green), warnings (orange), errors (red)
 - **Custom Scripts** - Automated multi-step sequences with keyboard input
 
@@ -238,8 +249,8 @@ ISO_PATH=/path/to/iso         # Default ISO path
 ```
 
 **Other settings:**
-- **Ports:** Auto-detected (4 ports per extender)
-- **Default Port:** 0 (change with 0-9 keys in TUI)
+- **Ports:** Auto-detected via `GET /api/switch` (returns extender count + ports per extender)
+- **Default Port:** Whatever PiKVM reports as currently active on launch (change with `e` / `p` + digits in TUI)
 - **API:** HTTPS (self-signed cert)
 
 **Security:**
@@ -249,11 +260,22 @@ ISO_PATH=/path/to/iso         # Default ISO path
 
 ### How Port Detection Works
 
-The tool automatically scans ports 0-15 on startup to detect which ports are available. Each PiKVM extender typically provides 4 ports, so:
-- **1 extender** = 4 ports (0-3)
-- **2 extenders** = 8 ports (0-7)
-- **3 extenders** = 12 ports (0-11)
-- etc.
+The tool calls `GET /api/switch` once on startup and parses the canonical topology returned by PiKVM:
+
+- `result.model.units[]` → number of extenders
+- `result.model.ports[]` → every port (with `id` like `"1.3"`, `unit`, `channel`)
+- `result.summary.active_port` → the currently-active linear port (used to seed the TUI)
+
+Linear port indices map to `extender.port` like this:
+
+| Linear | Extender | Port |
+| ------ | -------- | ---- |
+| 0      | 1        | 1    |
+| 3      | 1        | 4    |
+| 4      | 2        | 1    |
+| 7      | 2        | 4    |
+
+So `e 2` then `p 3` selects linear port `6` (`extender 2 / port 3`). All ATX endpoints (`/switch/atx/power`, `/switch/atx/click`, etc.) accept the linear index in `?port=N`.
 
 ---
 
