@@ -134,7 +134,7 @@ build_go_binary() {
     fi
 
     echo "🔨 Compiling..."
-    go build -o pikvm pikvm.go
+    go build -o pikvm .
 
     if [ $? -eq 0 ]; then
         chmod +x pikvm
