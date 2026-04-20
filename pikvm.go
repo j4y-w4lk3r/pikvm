@@ -1290,6 +1290,13 @@ func (m model) portStatusGlyphs(linear int) string {
 // else uses the dim divider color so the selection stays legible.
 
 // renderGridView is the whole-screen view shown while m.gridView is true.
+//
+// Layout strategy: each cell is a pre-assembled 6-line fixed-width block
+// (top border, 4 content rows, bottom border). Rendering is done by
+// stacking cells column-by-column into a single row of 6 lines, not by
+// lipgloss.JoinHorizontal over composed Style blocks. That avoids the
+// Bold+Border and MarginRight+BorderForeground rendering inconsistencies
+// that made individual cells bleed / shift in some terminals.
 func (m model) renderGridView() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
@@ -1298,12 +1305,26 @@ func (m model) renderGridView() string {
 
 	for ext := 1; ext <= m.extenders; ext++ {
 		sb.WriteString("  " + portInfoStyle.Render(fmt.Sprintf("Extender %d", ext)) + "\n")
-		cells := make([]string, 0, m.portsPerExt)
+
+		// Build every cell as a slice of 6 equal-width strings.
+		cells := make([][]string, m.portsPerExt)
 		for p := 1; p <= m.portsPerExt; p++ {
-			cells = append(cells, m.renderPortCell(m.linearPort(ext, p)))
+			cells[p-1] = m.renderPortCellLines(m.linearPort(ext, p))
 		}
-		row := lipgloss.JoinHorizontal(lipgloss.Top, cells...)
-		sb.WriteString("  " + row + "\n\n")
+
+		// Stack by stitching same-index lines from each cell. Use a single
+		// space as the between-cell gap so borders never touch.
+		for row := 0; row < 6; row++ {
+			sb.WriteString("  ")
+			for i, cell := range cells {
+				if i > 0 {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(cell[row])
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
 	}
 
 	legend := helpStyle.Render("legend: V video  U usb  P power  ★ PiKVM-active")
@@ -1314,38 +1335,47 @@ func (m model) renderGridView() string {
 	return sb.String()
 }
 
-// renderPortCell is one cell in the grid.
+// cellWidth is the visible character width of the interior of one grid cell
+// (between the left and right border characters). Four content rows are
+// padded/truncated to exactly this width so every row lines up.
+const cellWidth = 10
+
+// renderPortCellLines returns a cell as a slice of 6 fixed-width strings:
+// top border, row1 (port id), row2 (name), row3 (power), row4 (flags),
+// bottom border. Every string is exactly cellWidth + 2 visible columns
+// wide (the +2 is the two border characters).
 //
-// We deliberately use ASCII inside the cell (V / U / P for video / USB /
-// power, `·` when a link is down) instead of Nerd Font glyphs. Many
-// terminals render NF glyphs as 2-column wide while lipgloss counts them
-// as 1, which makes cell widths drift by a character and the row borders
-// look jagged. ASCII is always 1 column so every cell lines up.
+// We use ASCII-only content inside (V / U / P / ·) because many terminals
+// render Nerd Font glyphs as 2 columns while lipgloss counts them as 1 —
+// that width mismatch is what produced the jagged row borders earlier.
 //
-// Only ONE colored border is used at a time (the cursor's green). The
-// active port is flagged by a '★' marker next to its ID — no yellow border —
-// so border colors don't change row-to-row and the box chars join cleanly.
-func (m model) renderPortCell(linear int) string {
+// The cursor cell uses '┏ ┓ ┃ ┗ ┛' (heavy) box chars in success-green; the
+// non-cursor cells use '┌ ┐ │ └ ┘' (light) in a dim grey. That makes the
+// cursor stand out WITHOUT changing the visible width of the cell, so
+// neighbours still align perfectly.
+func (m model) renderPortCellLines(linear int) []string {
 	id := portExtID(linear, m.portsPerExt)
 	isActive := linear == m.activePort
 	isCursor := m.gridView && linear == m.gridCursor
 
-	// Row 1: port id (+ ★ when PiKVM-active)
+	// ---- content rows (colored) ----
+
+	// Row 1: port id + ★ on active port.
 	row1 := id
 	if isActive {
-		row1 += " \u2605" // ★ — U+2605 BLACK STAR, always 1 column wide
+		row1 += " \u2605"
 	}
 
-	// Row 2: profile name (truncated)
+	// Row 2: profile name.
 	name := ""
 	if p, ok := m.state.Ports[id]; ok && p.Name != "" {
 		name = p.Name
 	}
-	if len(name) > 7 {
-		name = name[:7]
+	if len(name) > cellWidth-2 {
+		name = name[:cellWidth-2]
 	}
 
-	// Row 3: ATX power
+	// Row 3: ATX power.
 	power := "-"
 	if linear < len(m.powerLeds) {
 		if m.powerLeds[linear] {
@@ -1355,36 +1385,80 @@ func (m model) renderPortCell(linear int) string {
 		}
 	}
 
-	// Row 4: ASCII flags — V / U / P lit in success-green when present, dim
-	// middle-dot when absent. All characters are single-column so the cell
-	// width stays stable across terminals and fonts.
+	// Row 4: V / U / P flags.
 	flag := func(arr []bool, lit string) string {
 		if linear < len(arr) && arr[linear] {
 			return successStyle.Render(lit)
 		}
-		return helpStyle.Render("\u00B7") // middle dot
+		return helpStyle.Render("\u00B7") // dim middle-dot
 	}
-	icons := flag(m.videoLinks, "V") + " " +
+
+	// Pad every row's visible content to an exact width BEFORE coloring so
+	// the final string length (in terminal columns) is predictable.
+	r1Pad := padRight(row1, cellWidth-2)
+	r2Pad := padRight(name, cellWidth-2)
+	r3Pad := padRight(power, cellWidth-2)
+	// Flags need extra care — colors are applied per-glyph and shouldn't
+	// affect width. Build from individually-styled single chars + plain
+	// space separators, then pad the plain-text length.
+	flagStr := flag(m.videoLinks, "V") + " " +
 		flag(m.usbLinks, "U") + " " +
 		flag(m.powerLeds, "P")
-
-	content := strings.Join([]string{row1, name, power, icons}, "\n")
-
-	style := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("#444444")).
-		Width(10).
-		Height(4).
-		Padding(0, 1).
-		MarginRight(1)
-
-	if isCursor {
-		style = style.
-			BorderForeground(lipgloss.Color("#9bf09d")).
-			Bold(true)
+	const visibleFlagLen = 5 // "V U P" — each letter or '·' is 1 column
+	if visibleFlagLen < cellWidth-2 {
+		flagStr += strings.Repeat(" ", cellWidth-2-visibleFlagLen)
 	}
 
-	return style.Render(content)
+	// ---- borders ----
+
+	tl, tr, bl, br, h, v := "\u250C", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502"
+	borderStyle := helpStyle // dim grey
+	if isCursor {
+		tl, tr, bl, br, h, v = "\u250F", "\u2513", "\u2517", "\u251B", "\u2501", "\u2503" // heavy box
+		borderStyle = successStyle
+	}
+	topBorder := borderStyle.Render(tl + strings.Repeat(h, cellWidth) + tr)
+	botBorder := borderStyle.Render(bl + strings.Repeat(h, cellWidth) + br)
+	leftV := borderStyle.Render(v)
+	rightV := borderStyle.Render(v)
+
+	// One-space inside-padding between left border and content (and same on
+	// the right) gives the cell a tiny breathing room.
+	wrap := func(body string) string { return leftV + " " + body + " " + rightV }
+
+	return []string{
+		topBorder,
+		wrap(r1Pad),
+		wrap(r2Pad),
+		wrap(r3Pad),
+		wrap(flagStr),
+		botBorder,
+	}
+}
+
+// padRight pads s with spaces on the right so the rune count is exactly n.
+// We use rune count (not byte count) because strings may contain multi-byte
+// glyphs like '★' (U+2605 — 3 bytes, 1 display column). Under the hood
+// len() would have over-counted those and produced short cells.
+//
+// All runes we render in grid cells are single-column (ASCII + ★), so rune
+// count == display width. If that ever changes, switch to something like
+// github.com/mattn/go-runewidth.
+func padRight(s string, n int) string {
+	runes := 0
+	for range s {
+		runes++
+	}
+	if runes >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-runes)
+}
+
+// renderPortCell is a thin compat wrapper preserved for any legacy caller —
+// returns the cell as a single newline-joined string.
+func (m model) renderPortCell(linear int) string {
+	return strings.Join(m.renderPortCellLines(linear), "\n")
 }
 
 // renderStatusBar (roadmap idea #10) — the always-visible single-line health
