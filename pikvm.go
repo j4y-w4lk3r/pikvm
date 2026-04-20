@@ -307,6 +307,12 @@ type model struct {
 	isoCursor           int
 	selectingBIOSKey    bool      // true if picking a BIOS key (idea #6)
 
+	// Grid-view (idea #7) — mosaic of every port with live signals + profile
+	// names, toggled with 'g'. gridCursor is a linear 0-based port index
+	// that tracks the highlighted cell while navigating with arrows.
+	gridView   bool
+	gridCursor int
+
 	// --- live state from the WebSocket subscription (Phase 1, idea #1) ---
 	wsConnected bool      // true while the /api/ws subscription is healthy
 	wsLastError string    // last reconnect error (shown if disconnected)
@@ -729,6 +735,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case m.selectingBIOSKey:
 				m.selectingBIOSKey = false
 				m.result = "BIOS key selection cancelled"
+			case m.gridView:
+				m.gridView = false
 			case m.focusMode != "":
 				m.focusMode = ""
 			default:
@@ -737,28 +745,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "e":
-			if !m.selectingISO && !m.selectingBIOSKey {
+			if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 				m.focusMode = "extender"
 			}
 
 		case "p":
-			if !m.selectingISO && !m.selectingBIOSKey {
+			if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 				m.focusMode = "port"
 			}
 
 		case "o":
-			if !m.selectingISO && !m.selectingBIOSKey {
+			if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 				m.focusMode = "ops"
 				m.cursor = 0
 			}
 
 		case "c":
-			if !m.selectingISO && !m.selectingBIOSKey {
+			if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 				m.focusMode = "scripts"
 				m.cursor = 0
 			}
 
+		case "g":
+			// Toggle grid-view mosaic (idea #7).
+			if !m.selectingISO && !m.selectingBIOSKey {
+				m.gridView = !m.gridView
+				if m.gridView {
+					m.gridCursor = m.port
+					m.focusMode = ""
+				}
+			}
+
 		case "up", "k":
+			if m.gridView {
+				// Up/down moves between extenders, keeping the port index.
+				if m.gridCursor >= m.portsPerExt {
+					m.gridCursor -= m.portsPerExt
+				}
+				break
+			}
 			if m.selectingISO {
 				if m.isoCursor > 0 {
 					m.isoCursor--
@@ -774,7 +799,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = len(actions) - 1
 			}
 
+		case "left", "h":
+			if m.gridView {
+				// Left/right moves within the current extender (no wrap).
+				subPort := m.gridCursor % m.portsPerExt
+				if subPort > 0 {
+					m.gridCursor--
+				}
+			}
+
+		case "right", "l":
+			if m.gridView {
+				subPort := m.gridCursor % m.portsPerExt
+				if subPort < m.portsPerExt-1 && m.gridCursor+1 < m.totalPorts {
+					m.gridCursor++
+				}
+			}
+
 		case "down", "j":
+			if m.gridView {
+				if m.gridCursor+m.portsPerExt < m.totalPorts {
+					m.gridCursor += m.portsPerExt
+				}
+				break
+			}
 			if m.selectingISO {
 				if m.isoCursor < len(m.availableISOEntries)-1 {
 					m.isoCursor++
@@ -883,6 +931,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter", " ":
+			if m.gridView {
+				// Accept current cell: switch PiKVM to that port and exit.
+				target := m.gridCursor
+				if target >= 0 && target < m.totalPorts {
+					m.port = target
+					if err := m.trySetActive(target); err != nil {
+						m.result = fmt.Sprintf("\uf071 set_active: %v", err)
+					} else {
+						curExt := m.extenderOf(target)
+						curPort := m.portOf(target)
+						label := fmt.Sprintf("%d.%d", curExt, curPort)
+						if p, ok := m.state.Ports[portExtID(target, m.portsPerExt)]; ok && p.Name != "" {
+							label += " (" + p.Name + ")"
+						}
+						m.result = "\uf00c switched to " + label
+					}
+				}
+				m.gridView = false
+				return m, nil
+			}
 			if m.selectingISO {
 				if m.isoCursor < len(m.availableISOEntries) {
 					entry := m.availableISOEntries[m.isoCursor]
@@ -907,6 +975,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	if m.quitting {
 		return successStyle.Render("\n\uf00c Goodbye!\n\n")
+	}
+
+	// Grid-view mosaic (idea #7) — replaces the two-column layout while on.
+	if m.gridView {
+		return m.renderGridView()
 	}
 
 	// BIOS-key picker (idea #6) — shown when "Boot to BIOS" was selected.
@@ -1145,7 +1218,7 @@ func (m model) View() string {
 	bottom.WriteString("\n  " + m.renderStatusBar() + "\n")
 
 	bottom.WriteString("\n  ")
-	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Operations  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"))
+	bottom.WriteString(helpStyle.Render("e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit"))
 	bottom.WriteString("\n")
 	if m.result != "" {
 		bottom.WriteString("\n  ")
@@ -1196,6 +1269,105 @@ func (m model) portStatusGlyphs(linear int) string {
 	return style(on(m.videoLinks), iconVideo) + " " +
 		style(on(m.usbLinks), iconUsb) + " " +
 		style(on(m.powerLeds), iconPower)
+}
+
+// ----------------------------------------------------------------------------
+// Grid view (roadmap idea #7)
+// ----------------------------------------------------------------------------
+//
+// Mosaic of every port across every extender, drawn as bordered cells. Each
+// cell folds together all live data we already have:
+//
+//   +------+
+//   | 2.4★ |   <- ext.port id, '★' marks PiKVM-side active port
+//   | pi   |   <- profile name from state.json (idea #5), or blank
+//   | on   |   <- ATX power LED on/off
+//   | 󰍹  |   <- per-port live icons (video / usb / power)
+//   +------+
+//
+// Highlighted cell (gridCursor) gets a bold pastel-green border. Active
+// cell gets a warning-yellow border when it's not the cursor. Everything
+// else uses the dim divider color so the selection stays legible.
+
+// renderGridView is the whole-screen view shown while m.gridView is true.
+func (m model) renderGridView() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(headerStyle.Render(" \uf0ce PiKVM Port Grid "))
+	sb.WriteString("\n\n")
+
+	for ext := 1; ext <= m.extenders; ext++ {
+		sb.WriteString("  " + portInfoStyle.Render(fmt.Sprintf("Extender %d", ext)) + "\n")
+		cells := make([]string, 0, m.portsPerExt)
+		for p := 1; p <= m.portsPerExt; p++ {
+			cells = append(cells, m.renderPortCell(m.linearPort(ext, p)))
+		}
+		row := lipgloss.JoinHorizontal(lipgloss.Top, cells...)
+		sb.WriteString("  " + row + "\n\n")
+	}
+
+	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to that port   g or ESC: back   q: quit")
+	sb.WriteString("  " + help + "\n")
+	sb.WriteString("\n  " + m.renderStatusBar() + "\n")
+	return sb.String()
+}
+
+// renderPortCell is one cell in the grid. Width matches across cells so rows
+// line up nicely when JoinHorizontal'd.
+func (m model) renderPortCell(linear int) string {
+	id := portExtID(linear, m.portsPerExt)
+	isActive := linear == m.activePort
+	isCursor := m.gridView && linear == m.gridCursor
+
+	// Row 1: port id (+ ★ when PiKVM-active)
+	row1 := id
+	if isActive {
+		row1 += " \u2605" // ★
+	}
+
+	// Row 2: profile name (or blank)
+	name := ""
+	if p, ok := m.state.Ports[id]; ok && p.Name != "" {
+		name = p.Name
+	}
+	if len(name) > 8 {
+		name = name[:8]
+	}
+
+	// Row 3: ATX power
+	power := "—"
+	if linear < len(m.powerLeds) {
+		if m.powerLeds[linear] {
+			power = "on"
+		} else {
+			power = "off"
+		}
+	}
+
+	// Row 4: live icons (video / usb / power)
+	icons := m.portStatusGlyphs(linear)
+
+	content := strings.Join([]string{row1, name, power, icons}, "\n")
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("#444444")).
+		Width(10).
+		Padding(0, 1).
+		MarginRight(1)
+
+	switch {
+	case isCursor:
+		style = style.
+			BorderForeground(lipgloss.Color("#9bf09d")).
+			Foreground(lipgloss.Color("#9bf09d")).
+			Bold(true)
+	case isActive:
+		style = style.
+			BorderForeground(lipgloss.Color("#FFD700"))
+	}
+
+	return style.Render(content)
 }
 
 // renderStatusBar (roadmap idea #10) — the always-visible single-line health

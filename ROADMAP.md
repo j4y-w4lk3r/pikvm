@@ -51,7 +51,7 @@ Optional flag that emits structured events (`{"event":"port_changed","port":"2.3
 
 ## Phase 3 — Big UX upgrades (need Phase 1 + 2)
 
-### 7. `[ ]` Grid view of all ports (toggle with `g`)
+### 7. `[x]` Grid view of all ports (toggle with `g`)
 Mosaic of every port across all extenders showing `power_state · video_link · usb_link · profile_name · is_active`. All data is already in `/api/switch`. Toggle from the standard view with `g`.
 
 ### 8. `[ ]` Snapshot thumbnails inline
