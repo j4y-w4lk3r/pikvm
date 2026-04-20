@@ -637,12 +637,25 @@ func cliPickISO(jsonMode bool) {
 	if chosen == nil {
 		die(jsonMode, "pick_iso", fmt.Errorf("could not match selection: %q", picked))
 	}
-	if chosen.LocalPath != "" {
-		die(jsonMode, "pick_iso", fmt.Errorf("local file %q must be uploaded first; use the TUI or ./pikvm.sh --iso --upload", chosen.LocalPath))
-	}
 	sw := api.FetchSwitchState()
 	port := sw.ActivePort
-	out := scripts.BootFromISOEntry(port, *chosen)
+
+	// Local ISO → do the upload in-process first (idea #17). This is a
+	// blocking CLI call, so we just wait for it. The TUI uses tea.Cmd for
+	// async progress; the CLI prints "uploading..." then blocks.
+	if chosen.LocalPath != "" {
+		if !jsonMode {
+			fmt.Printf("\uf0c1 Uploading %s → PiKVM (this may take a while on Tailscale)...\n", chosen.Name)
+		}
+		if err := api.UploadISO(chosen.LocalPath, chosen.Name, nil); err != nil {
+			die(jsonMode, "pick_iso", fmt.Errorf("upload: %w", err))
+		}
+		if !jsonMode {
+			fmt.Printf("\uf00c Upload complete.\n")
+		}
+	}
+
+	out := scripts.BootFromSpecificISO(port, chosen.Name)
 	if jsonMode {
 		emit(true, "pick_iso", map[string]interface{}{"iso": chosen.Name, "port": port, "log": stripIcons(out)}, nil)
 	} else {

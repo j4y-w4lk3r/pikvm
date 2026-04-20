@@ -75,7 +75,7 @@ cmd/pikvm/    # main.go (just wires everything up)
 ```
 Enables tests (currently zero coverage), enables mocking the HTTP client for golden-file TUI snapshots, makes the codebase readable.
 
-### 17. `[ ]` Native Go for everything currently shelled out
+### 17. `[~]` Native Go for everything currently shelled out
 Replace `osascript`, `gnome-terminal`, `pikvm.sh` callouts and `websocat` pipelines with in-process Go. Result: progress bars *inside* the TUI for ISO uploads, no popup terminal windows, no bash dependency for end users.
 
 ### 18. `[ ]` Single static binary distribution

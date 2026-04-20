@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,78 @@ func FetchAvailableISOs() ([]string, error) {
 		}
 	}
 	return isos, nil
+}
+
+// UploadISO uploads a local .iso to PiKVM's mass-storage device via a single
+// POST to /api/msd/write. Replaces the previous bash/curl subprocess —
+// everything stays in-process so the TUI can show a progress bar, there's
+// no popup Terminal window, and nothing depends on the pikvm.sh wrapper
+// script being on the same filesystem.
+//
+// The upload is streamed (io.TeeReader over an os.File) — we never load the
+// whole ISO into memory, so multi-GB files work fine.
+//
+// progress is called after every read with (writtenBytes, totalBytes). Pass
+// nil if you don't care. The TUI already renders live upload progress from
+// WebSocket msd events, so the callback is optional.
+//
+// The request uses a 60-minute timeout to accommodate slow Tailscale links
+// uploading multi-GB ISOs.
+func UploadISO(localPath, remoteName string, progress func(written, total int64)) error {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", localPath, err)
+	}
+	total := stat.Size()
+
+	body := &progressReader{r: f, total: total, cb: progress}
+	endpoint := "/msd/write?image=" + url.QueryEscape(remoteName)
+
+	req, cancel, err := NewRequest("POST", endpoint, body, 60*time.Minute)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = total
+
+	resp, err := RunRequest(req, cancel)
+	if err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("upload returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// progressReader is an io.Reader that calls cb(written, total) after every
+// successful Read. Used by UploadISO to expose local-side progress; the
+// TUI's WS-driven status bar is the authoritative source of truth (PiKVM
+// tells us what it has RECEIVED, which is more useful than what we've sent).
+type progressReader struct {
+	r     io.Reader
+	total int64
+	read  int64
+	cb    func(written, total int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		if p.cb != nil {
+			p.cb(p.read, p.total)
+		}
+	}
+	return n, err
 }
 
 // GetISODir returns the path to the local iso folder (next to executable, cwd fallback).

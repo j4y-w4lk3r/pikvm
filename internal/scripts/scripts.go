@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/browser"
+
 	"pikvm/internal/api"
 	"pikvm/internal/config"
 )
@@ -189,22 +191,19 @@ func TypeFromTextFile(_ int) string {
 // View video stream (browser)
 // ----------------------------------------------------------------------------
 
-// ViewVideoStream opens the PiKVM KVM page in the default browser.
+// ViewVideoStream opens the PiKVM KVM page in the default browser via the
+// github.com/pkg/browser package (cross-platform — no manual switch on
+// runtime.GOOS or exec.Command("open"/"xdg-open"/"rundll32")).
 func ViewVideoStream(port int) string {
 	_ = api.SetSwitchPort(port) // non-fatal
 	kvmURL := fmt.Sprintf("https://%s/", config.Host)
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", kvmURL)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", kvmURL)
-	default:
-		cmd = exec.Command("xdg-open", kvmURL)
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+
+	// pkg/browser writes internal diagnostic noise to stderr (e.g. "open:
+	// no such file or directory" for fallbacks); route it to /dev/null so
+	// the TUI's alt-screen doesn't flicker.
+	browser.Stderr = os.NewFile(0, os.DevNull)
+
+	if err := browser.OpenURL(kvmURL); err != nil {
 		return fmt.Sprintf("\uf057 Could not open browser: %v\n  Open manually: %s", err, kvmURL)
 	}
 	return fmt.Sprintf("\uf00c Opening PiKVM in browser (video set to port %d).\n  Log in if prompted, then watch the stream.", port+1)
@@ -285,45 +284,22 @@ func ViewVideoMpv(port int) string {
 // Boot from ISO
 // ----------------------------------------------------------------------------
 
-// BootFromISOEntry uploads entry if it's local, then mounts + F7-spams.
+// BootFromISOEntry handles booting from an entry the user already chose.
+//
+// For PiKVM-side ISOs (entry.LocalPath == "") it runs the full mount + F7
+// boot sequence synchronously.
+//
+// For LOCAL ISOs (entry.LocalPath != "") it returns ErrNeedsUpload so the
+// TUI can kick off a native in-process upload with a progress bar (via the
+// UploadISO function in the api package). The old subprocess-in-Terminal
+// behaviour is gone.
 func BootFromISOEntry(port int, entry api.IsoEntry) string {
 	if entry.LocalPath != "" {
-		execPath, _ := os.Executable()
-		scriptDir := filepath.Dir(execPath)
-		if _, err := os.Stat(filepath.Join(scriptDir, "pikvm.sh")); os.IsNotExist(err) {
-			scriptDir = "."
-		}
-		absDir, _ := filepath.Abs(scriptDir)
-		uploadCmd := fmt.Sprintf("cd %s && ./pikvm.sh --iso --upload %s", quotedBash(absDir), quotedBash(entry.LocalPath))
-
-		if runtime.GOOS == "darwin" {
-			cmd := exec.Command("osascript", "-e", "tell application \"Terminal\" to do script "+quotedAppleScript(uploadCmd))
-			if err := cmd.Run(); err != nil {
-				return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in another terminal: ./pikvm.sh --iso --upload %s", err, entry.LocalPath)
-			}
-			return fmt.Sprintf("\uf00c Upload started in new Terminal window.\n  When it finishes, run Boot from ISO (1) again and select %s to boot.", entry.Name)
-		}
-		if runtime.GOOS == "linux" {
-			for _, termCmd := range []string{"gnome-terminal --", "xterm -e"} {
-				var cmd *exec.Cmd
-				if strings.HasPrefix(termCmd, "gnome-terminal") {
-					cmd = exec.Command("gnome-terminal", "--", "bash", "-c", uploadCmd+"; echo; read -p 'Press Enter to close...'")
-				} else {
-					cmd = exec.Command("xterm", "-e", "bash", "-c", uploadCmd+"; echo; read -p 'Press Enter to close...'")
-				}
-				if err := cmd.Start(); err != nil {
-					continue
-				}
-				return fmt.Sprintf("\uf00c Upload started in new window.\n  When it finishes, run Boot from ISO (1) again and select %s to boot.", entry.Name)
-			}
-		}
-		cmd := exec.Command("sh", "-c", uploadCmd)
-		cmd.Dir = scriptDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Sprintf("\uf057 Upload failed: %v\n  Run manually: ./pikvm.sh --iso --upload %s", err, entry.LocalPath)
-		}
+		// Caller must handle ErrNeedsUpload by calling api.UploadISO then
+		// BootFromSpecificISO themselves (async, with progress in the TUI).
+		// We preserve the error sentinel in the returned string so CLI
+		// callers that don't understand the async flow get a clear message.
+		return fmt.Sprintf("\uf071 Local ISO needs upload first — use the TUI to upload with live progress,\n  or run: ./pikvm.sh --iso --upload %s", entry.LocalPath)
 	}
 	return BootFromSpecificISO(port, entry.Name)
 }
@@ -378,11 +354,6 @@ func BootFromSpecificISO(port int, isoName string) string {
 // quotedPath returns a path safe for sh -c "cd ..." (single-quote).
 func quotedPath(p string) string {
 	return "'" + strings.ReplaceAll(p, "'", "'\"'\"'") + "'"
-}
-
-// quotedBash returns a string safe for sh -c (single-quoted).
-func quotedBash(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // quotedAppleScript returns a string safe for AppleScript (backslash-escape).

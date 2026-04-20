@@ -11,6 +11,30 @@ import (
 	"pikvm/internal/state"
 )
 
+// ----------------------------------------------------------------------------
+// Async ISO upload (idea #17) — replaces the old osascript / gnome-terminal
+// popup. We kick off api.UploadISO in a goroutine via tea.Cmd; when it
+// returns, an uploadDoneMsg arrives in Update() and we chain straight into
+// BootFromSpecificISO. Live progress is already shown by the status bar via
+// WS msd events, so there's no local progress plumbing.
+// ----------------------------------------------------------------------------
+
+type uploadDoneMsg struct {
+	name string
+	port int
+	err  error
+}
+
+// uploadISOCmd returns a tea.Cmd that performs the HTTP upload off the main
+// goroutine. Bubble Tea will Send the returned tea.Msg to Update() when it
+// finishes, at which point we kick off the boot sequence.
+func uploadISOCmd(entry api.IsoEntry, port int) tea.Cmd {
+	return func() tea.Msg {
+		err := api.UploadISO(entry.LocalPath, entry.Name, nil)
+		return uploadDoneMsg{name: entry.Name, port: port, err: err}
+	}
+}
+
 // Update is Bubble Tea's reducer. We dispatch on message type (WS / info /
 // key events) and return a new model + an optional Cmd.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -75,6 +99,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case api.InfoMsg:
 		m.info = msg.State
+		return m, nil
+
+	case uploadDoneMsg:
+		if msg.err != nil {
+			m.result = fmt.Sprintf("\uf057 Upload failed: %v", msg.err)
+			return m, nil
+		}
+		// Upload complete → chain into the boot sequence (mount + F7 spam).
+		m.result = scripts.BootFromSpecificISO(msg.port, msg.name)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -235,7 +268,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.isoCursor < len(m.availableISOEntries) {
 				entry := m.availableISOEntries[m.isoCursor]
 				m.selectingISO = false
-				m.result = scripts.BootFromISOEntry(m.port, entry)
+				if entry.LocalPath != "" {
+					// Local ISO — kick off an async in-process upload
+					// (idea #17). Status bar shows live progress via WS
+					// msd events. BootFromSpecificISO runs when the
+					// uploadDoneMsg lands back in Update().
+					m.result = fmt.Sprintf("\uf0c1 Uploading %s — live progress in status bar below…", entry.Name)
+					return m, uploadISOCmd(entry, m.port)
+				}
+				// Already on PiKVM — mount + boot synchronously.
+				m.result = scripts.BootFromSpecificISO(m.port, entry.Name)
 			}
 		} else if m.focusMode == "ops" {
 			m.result = api.ExecuteAction(api.DefaultActions[m.cursor], m.port)
