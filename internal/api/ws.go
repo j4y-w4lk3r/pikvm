@@ -255,6 +255,7 @@ func decodeSwitchEvent(raw json.RawMessage) (SwitchMsg, bool) {
 	for i := 0; i < total; i++ {
 		state.Available = append(state.Available, PortInfo{ID: i, Active: true})
 	}
+	lastPortsPerExt.Store(int32(state.PortsPerExt))
 	return SwitchMsg{State: state}, true
 }
 

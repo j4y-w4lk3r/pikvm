@@ -5,8 +5,39 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
+
+// lastPortsPerExt remembers the most recent ports-per-extender value learned
+// from /api/switch (or pushed via WS). It lets callers who only have a
+// linear port index format it as "ext.port" (e.g. 7 → "2.4") without
+// threading topology through every function signature.
+//
+// Seeded to 1 so early-session calls still produce something sensible.
+// Updated atomically from both FetchSwitchState and the WS decodeSwitchEvent
+// path.
+var lastPortsPerExt atomic.Int32
+
+func init() { lastPortsPerExt.Store(1) }
+
+// LastPortsPerExt returns the most recent ports-per-extender value. Always
+// >= 1 so port arithmetic never divides by zero.
+func LastPortsPerExt() int {
+	v := int(lastPortsPerExt.Load())
+	if v < 1 {
+		return 1
+	}
+	return v
+}
+
+// FormatPort renders a linear 0-based port as the user-facing "ext.port"
+// form (1-based), e.g. 7 → "2.4". Uses the most recently observed
+// portsPerExt; falls back to "port <N+1>" if we've never seen one.
+func FormatPort(linear int) string {
+	ppe := LastPortsPerExt()
+	return fmt.Sprintf("%d.%d", linear/ppe+1, linear%ppe+1)
+}
 
 // PortInfo is one entry in SwitchState.Available.
 type PortInfo struct {
@@ -105,6 +136,9 @@ func FetchSwitchState() SwitchState {
 	state.UsbLinks = parsed.Result.Usb.Links
 	state.PowerLeds = parsed.Result.Atx.Leds.Power
 	state.HddLeds = parsed.Result.Atx.Leds.Hdd
+
+	// Remember portsPerExt for FormatPort / ExecuteAction's success message.
+	lastPortsPerExt.Store(int32(state.PortsPerExt))
 	return state
 }
 

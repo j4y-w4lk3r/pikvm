@@ -107,7 +107,7 @@ func BootToBIOSWithKey(port int, opt BIOSKeyOption) string {
 	}()
 	act := api.Action{Name: "Power ON", APICmd: "/switch/atx/power?port=%d&action=on", Method: "POST"}
 	api.ExecuteAction(act, port)
-	return fmt.Sprintf("\uf00c %s spam started! (60 presses over 30s) + Powered on port %d", opt.Label, port+1)
+	return fmt.Sprintf("\uf00c %s spam started! (60 presses over 30s) + Powered on port %s", opt.Label, api.FormatPort(port))
 }
 
 // ----------------------------------------------------------------------------
@@ -210,7 +210,7 @@ func ViewVideoStream(port int) string {
 	if err := browser.OpenURL(kvmURL); err != nil {
 		return fmt.Sprintf("\uf057 Could not open browser: %v\n  Open manually: %s", err, kvmURL)
 	}
-	return fmt.Sprintf("\uf00c Opening PiKVM in browser (video set to port %d).\n  Log in if prompted, then watch the stream.", port+1)
+	return fmt.Sprintf("\uf00c Opening PiKVM in browser (video set to port %s).\n  Log in if prompted, then watch the stream.", api.FormatPort(port))
 }
 
 // ----------------------------------------------------------------------------
@@ -323,7 +323,7 @@ func ViewVideoMpv(port int) string {
 		_ = conn.Close(websocket.StatusNormalClosure, "player exited")
 	}()
 
-	return fmt.Sprintf("\uf00c Video stream opened in %s (port %d). Close its window when done.", player, port+1)
+	return fmt.Sprintf("\uf00c Video stream opened in %s (port %s). Close its window when done.", player, api.FormatPort(port))
 }
 
 // ----------------------------------------------------------------------------
@@ -387,7 +387,7 @@ func BootFromSpecificISO(port int, isoName string) string {
 	api.ExecuteAction(act, port)
 
 	result.WriteString("  \uf00c F7 spam started! (60 presses over 30s)\n")
-	result.WriteString(fmt.Sprintf("  \uf00c Powered on port %d\n\n", port+1))
+	result.WriteString(fmt.Sprintf("  \uf00c Powered on port %s\n\n", api.FormatPort(port)))
 	result.WriteString("\uf058 Boot sequence complete!\n")
 	result.WriteString(fmt.Sprintf("\uf0a1 Select the USB drive from BIOS to boot: %s", isoName))
 	return result.String()

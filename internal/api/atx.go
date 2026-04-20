@@ -59,7 +59,7 @@ func ExecuteAction(act Action, port int) string {
 		return fmt.Sprintf("✓ Response: %s", string(body))
 	}
 	if ok, exists := result["ok"].(bool); exists && ok {
-		return fmt.Sprintf("\uf00c Success: %s executed on port %d", act.Name, port+1)
+		return fmt.Sprintf("\uf00c Success: %s executed on port %s", act.Name, FormatPort(port))
 	}
 	return fmt.Sprintf("\uf071 Response: %s", string(body))
 }
