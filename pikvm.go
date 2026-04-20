@@ -340,8 +340,9 @@ type model struct {
 }
 
 func initialModel() model {
-	fmt.Printf("🔌 Connecting to PiKVM at: %s\n", pikvmHost)
-	fmt.Printf("🔍 Fetching switch state...\n")
+	// Silent startup — the status bar at the bottom already shows
+	// user@host and live connection state, so extra "Connecting..." prints
+	// would just litter the user's scrollback above the TUI.
 	state := fetchSwitchState()
 	return model{
 		cursor:         0,
@@ -2157,7 +2158,10 @@ func main() {
 	wsCtx, wsCancel := context.WithCancel(context.Background())
 	defer wsCancel()
 
-	p := tea.NewProgram(initialModel())
+	// WithAltScreen: save the terminal's existing content, run the TUI in a
+	// separate screen buffer, restore on quit. Standard full-screen TUI
+	// behavior — nothing the TUI prints leaks into shell scrollback.
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	startWebSocket(wsCtx, p)
 	startInfoPoller(wsCtx, p)
 
