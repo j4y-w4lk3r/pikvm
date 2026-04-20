@@ -1,0 +1,119 @@
+# GoReleaser config for `pikvm` — single static binary distribution (idea #18).
+#
+# Triggered by `git tag v<X.Y.Z> && git push --tags`; the release.yml GitHub
+# Action then runs `goreleaser release`, which:
+#
+#   1. Cross-compiles the binary for macOS (amd64 + arm64) and Linux
+#      (amd64 + arm64).
+#   2. Archives each build as a tarball with checksums.
+#   3. Creates a GitHub release from the tag with a generated changelog.
+#   4. Commits a Homebrew formula into github.com/lso0/homebrew-pikvm
+#      (see `brews:` block) so users can `brew install lso0/pikvm/pikvm`.
+#
+# Test locally (no GitHub, no tag push) with:
+#   goreleaser release --snapshot --clean
+# which produces ./dist/ with all binaries + archives for inspection.
+
+version: 2
+
+project_name: pikvm
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pikvm
+    main: ./cmd/pikvm
+    binary: pikvm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: pikvm
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - ROADMAP.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-SNAPSHOT-{{.ShortCommit}}"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+
+# Homebrew tap — goreleaser auto-commits this .rb into the configured repo.
+# On first release, create the tap repo (lso0/homebrew-pikvm) manually;
+# goreleaser will push the Formula/pikvm.rb on every subsequent tag.
+brews:
+  - name: pikvm
+    repository:
+      owner: lso0
+      name: homebrew-pikvm
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/lso0/pikvm
+    description: "PiKVM ATX power control — terminal UI and CLI"
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "pikvm: bump to {{ .Tag }}"
+    directory: Formula
+    install: |
+      bin.install "pikvm"
+    test: |
+      assert_match "PiKVM Control", shell_output("#{bin}/pikvm --help")
+    dependencies:
+      - name: fzf
+        type: optional
+      - name: ffmpeg
+        type: optional
+      - name: mpv
+        type: optional
+      - name: chafa
+        type: optional
+
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## PiKVM v{{ .Version }}
+
+    Pre-built static binaries for macOS (Intel + Apple Silicon) and Linux
+    (x86_64 + arm64) are attached below. Or install via Homebrew:
+
+    ```
+    brew install lso0/pikvm/pikvm
+    ```
+  footer: |
+    **Full changelog**: https://github.com/lso0/pikvm/compare/{{ .PreviousTag }}...{{ .Tag }}

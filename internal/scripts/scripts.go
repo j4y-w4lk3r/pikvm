@@ -7,14 +7,18 @@
 package scripts
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/pkg/browser"
 
 	"pikvm/internal/api"
@@ -213,71 +217,113 @@ func ViewVideoStream(port int) string {
 // View video (mpv)
 // ----------------------------------------------------------------------------
 
-// ViewVideoMpv opens the HDMI stream in ffplay/mpv.
+// ViewVideoMpv opens the HDMI stream in ffplay (or mpv fallback). The
+// pipeline used to be:
+//
+//	websocat … | ffplay
+//
+// wrapped in an osascript/Terminal popup on macOS because websocat wanted
+// a real TTY. We replaced websocat with a native coder/websocket dial and
+// ffplay's stdin with an io.Writer fed by the WS goroutine, so now the
+// whole thing runs in-process — no subprocess popup, no bash, no
+// websocat dependency. ffplay still handles the video window itself
+// (SDL on macOS, X11 on Linux).
 func ViewVideoMpv(port int) string {
-	if _, err := exec.LookPath("websocat"); err != nil {
-		return "\uf057 websocat not found in PATH.\n  Install: brew install websocat\n  Run this program from a terminal where PATH includes Homebrew."
-	}
-	if _, err := exec.LookPath("ffplay"); err != nil {
-		if _, err := exec.LookPath("mpv"); err != nil {
-			return "\uf057 Need ffplay or mpv in PATH.\n  Install: brew install ffmpeg  (for ffplay) or brew install mpv"
-		}
-	}
-	_ = api.SetSwitchPort(port)
-
-	execPath, _ := os.Executable()
-	scriptDir := filepath.Dir(execPath)
-	if _, err := os.Stat(filepath.Join(scriptDir, "pikvm.sh")); os.IsNotExist(err) {
-		scriptDir = "."
-	}
-	scriptPath := filepath.Join(scriptDir, "pikvm.sh")
-	absScript, _ := filepath.Abs(scriptPath)
-
-	if runtime.GOOS == "darwin" {
-		runInTerminal := fmt.Sprintf("cd %s && ./pikvm.sh --stream", quotedPath(filepath.Dir(absScript)))
-		cmd := exec.Command("osascript", "-e", "tell application \"Terminal\" to do script "+quotedAppleScript(runInTerminal))
-		if err := cmd.Run(); err != nil {
-			return fmt.Sprintf("\uf057 Could not open Terminal: %v\n  Run in terminal instead: cd %s && ./pikvm.sh --stream", err, scriptDir)
-		}
-		return fmt.Sprintf("\uf00c Opened stream in a new Terminal window (port %d). Close the window when done.", port+1)
-	}
-
-	useFfplay := false
+	// Pick a player that's actually installed.
+	var player string
+	var playerArgs []string
 	if _, err := exec.LookPath("ffplay"); err == nil {
-		useFfplay = true
+		player = "ffplay"
+		playerArgs = []string{
+			"-f", "h264",
+			"-framerate", "30",
+			"-probesize", "10M",
+			"-analyzeduration", "5M",
+			"-fflags", "nobuffer",
+			"-flags", "low_delay",
+			"-i", "pipe:0",
+			"-window_title", "PiKVM",
+		}
+	} else if _, err := exec.LookPath("mpv"); err == nil {
+		player = "mpv"
+		playerArgs = []string{
+			"--no-cache",
+			"--demuxer-lavf-format=h264",
+			"--demuxer-lavf-o=probesize=10000000,analyzeduration=5000000",
+			"-",
+		}
+	} else {
+		return "\uf057 Need ffplay or mpv in PATH.\n  Install: brew install ffmpeg (for ffplay) or brew install mpv"
 	}
-	keeperURL := fmt.Sprintf("wss://%s/api/ws?stream=1", config.Host)
-	keeper := exec.Command("websocat", "-k", keeperURL,
-		"-H", "X-KVMD-User: "+config.User,
-		"-H", "X-KVMD-Passwd: "+config.Pass,
-	)
-	if err := keeper.Start(); err != nil {
-		return fmt.Sprintf("\uf057 Could not start stream keeper: %v", err)
-	}
-	defer keeper.Process.Kill()
-	time.Sleep(2 * time.Second)
 
+	_ = api.SetSwitchPort(port) // non-fatal
+
+	// Dial the media WebSocket natively.
+	ctx, cancel := context.WithCancel(context.Background())
+	httpClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	headers := http.Header{}
+	headers.Set("X-KVMD-User", config.User)
+	headers.Set("X-KVMD-Passwd", config.Pass)
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	mediaURL := fmt.Sprintf("wss://%s/api/media/ws?video=h264", config.Host)
-	var script string
-	if useFfplay {
-		script = `websocat -b -B10000000 -k "$WS_MEDIA_URL" -H "X-KVMD-User: $WS_USER" -H "X-KVMD-Passwd: $WS_PASS" | ffplay -f h264 -framerate 30 -probesize 10M -analyzeduration 5M -fflags nobuffer -flags low_delay -i pipe:0 -window_title PiKVM`
-	} else {
-		script = `websocat -b -B10000000 -k "$WS_MEDIA_URL" -H "X-KVMD-User: $WS_USER" -H "X-KVMD-Passwd: $WS_PASS" | mpv --no-cache --demuxer-lavf-format=h264 --demuxer-lavf-o=probesize=10000000,analyzeduration=5000000 -`
+	conn, _, err := websocket.Dial(dialCtx, mediaURL, &websocket.DialOptions{
+		HTTPClient: httpClient,
+		HTTPHeader: headers,
+	})
+	dialCancel()
+	if err != nil {
+		cancel()
+		return fmt.Sprintf("\uf057 Could not connect to video stream: %v", err)
 	}
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", script)
-	} else {
-		cmd = exec.Command("sh", "-c", script)
+	conn.SetReadLimit(16 * 1024 * 1024) // H.264 keyframes can be big
+
+	// Spawn the player with stdin piped from us. Stdout/stderr go to
+	// /dev/null so chatter doesn't clobber the TUI's alt-screen.
+	cmd := exec.Command(player, playerArgs...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		_ = conn.Close(websocket.StatusInternalError, "stdin pipe failed")
+		return fmt.Sprintf("\uf057 %s stdin pipe: %v", player, err)
 	}
-	cmd.Dir = scriptDir
-	cmd.Env = append(os.Environ(), "WS_MEDIA_URL="+mediaURL, "WS_USER="+config.User, "WS_PASS="+config.Pass)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Sprintf("\uf00c Stream ended. %v", err)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		cancel()
+		_ = conn.Close(websocket.StatusInternalError, "player start failed")
+		return fmt.Sprintf("\uf057 %s start: %v", player, err)
 	}
-	return "\uf00c Stream ended."
+
+	// Copy WS frames → player stdin in the background. Stops when either
+	// the WS read errors (server closed / network drop) or stdin write
+	// errors (player window closed).
+	go func() {
+		defer cancel()
+		defer func() { _ = stdin.Close() }()
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "stream done") }()
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			if _, err := stdin.Write(data); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Reap the child process when the user closes its window (otherwise
+	// it'd become a zombie until the TUI quits).
+	go func() {
+		_ = cmd.Wait()
+		cancel()
+		_ = conn.Close(websocket.StatusNormalClosure, "player exited")
+	}()
+
+	return fmt.Sprintf("\uf00c Video stream opened in %s (port %d). Close its window when done.", player, port+1)
 }
 
 // ----------------------------------------------------------------------------
@@ -347,33 +393,3 @@ func BootFromSpecificISO(port int, isoName string) string {
 	return result.String()
 }
 
-// ----------------------------------------------------------------------------
-// Shell-safe quoting helpers (used by ViewVideoMpv + BootFromISOEntry).
-// ----------------------------------------------------------------------------
-
-// quotedPath returns a path safe for sh -c "cd ..." (single-quote).
-func quotedPath(p string) string {
-	return "'" + strings.ReplaceAll(p, "'", "'\"'\"'") + "'"
-}
-
-// quotedAppleScript returns a string safe for AppleScript (backslash-escape).
-func quotedAppleScript(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString("\\\\")
-		case '"':
-			b.WriteString("\\\"")
-		case '\n':
-			b.WriteString("\\n")
-		case '\r':
-			b.WriteString("\\r")
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}

@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go vet ./...
+
+      # Tests that require a live PiKVM (TestISOCache, TestHTTPClientReuse,
+      # TestSnapshotFetch) skip cleanly when config.json / .env is missing,
+      # which is the case in CI. Pure-logic tests still run.
+      - run: go test -v ./...
+
+      - name: Build binary
+        run: go build -o /tmp/pikvm ./cmd/pikvm
+
+      - name: Smoke test
+        run: /tmp/pikvm help | head -5
