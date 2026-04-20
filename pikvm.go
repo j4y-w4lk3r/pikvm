@@ -324,6 +324,11 @@ type model struct {
 
 	// /api/info snapshot for the status bar (idea #10)
 	info infoState
+
+	// Per-port profiles from ~/.config/pikvm/state.json (idea #5). Loaded
+	// once at startup; saveState() is called whenever the TUI learns a new
+	// preference it wants to persist (e.g. after the user picks a BIOS key).
+	state pikvmState
 	msdOnline   bool      // mass-storage device is online
 	msdBusy     bool      // MSD is currently writing
 	msdConnect  bool      // MSD is connected to the server
@@ -352,7 +357,28 @@ func initialModel() model {
 		hddLeds:        state.HddLeds,
 		portsDetected:  true,
 		inScripts:      false,
+		state:          loadState(),
 	}
+}
+
+// portName returns the user-defined profile name for a linear port, or the
+// canonical "X.Y" form when no name is saved. Pure display helper.
+func (m model) portName(linear int) string {
+	id := portExtID(linear, m.portsPerExt)
+	if p, ok := m.state.Ports[id]; ok && p.Name != "" {
+		return p.Name
+	}
+	return id
+}
+
+// portExtIDOf is like portExtID but uses the model's own topology.
+func (m model) portExtIDOf(linear int) string { return portExtID(linear, m.portsPerExt) }
+
+// savedBIOSKey returns the saved BIOS key label for the given port, or ""
+// if none is saved.
+func (m model) savedBIOSKey(linear int) string {
+	p := m.state.Ports[m.portExtIDOf(linear)]
+	return p.BIOSKey
 }
 
 // extenderOf returns the 1-based extender for a linear port.
@@ -776,6 +802,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				opt := biosKeyOptions[digit-1]
 				m.selectingBIOSKey = false
+
+				// Remember the user's choice per port so next time we can
+				// pre-indicate the saved default (idea #5).
+				id := m.portExtIDOf(m.port)
+				prof := m.state.Ports[id]
+				if prof.BIOSKey != opt.key {
+					prof.BIOSKey = opt.key
+					m.state = setPortProfile(m.state, id, prof)
+					if err := saveState(m.state); err != nil {
+						m.result = fmt.Sprintf("\uf071 saved BIOS key %s, but could not persist: %v", opt.label, err)
+						break
+					}
+				}
 				m.result = bootToBIOSWithKey(m.port, opt)
 			} else if m.focusMode == "extender" {
 				digit := int(msg.String()[0] - '0')
@@ -869,7 +908,9 @@ func (m model) View() string {
 		return successStyle.Render("\n\uf00c Goodbye!\n\n")
 	}
 
-	// BIOS-key picker (idea #6) — shown when a "Boot to BIOS" was selected.
+	// BIOS-key picker (idea #6) — shown when "Boot to BIOS" was selected.
+	// If the target port has a saved default (idea #5), the matching row is
+	// marked with "★" so the user can see it at a glance.
 	if m.selectingBIOSKey {
 		var s strings.Builder
 		s.WriteString("\n")
@@ -878,9 +919,18 @@ func (m model) View() string {
 
 		curExt := m.extenderOf(m.port)
 		curSubPort := m.portOf(m.port)
+		target := fmt.Sprintf("%d.%d", curExt, curSubPort)
+		if p, ok := m.state.Ports[m.portExtIDOf(m.port)]; ok && p.Name != "" {
+			target = fmt.Sprintf("%s (%s)", target, p.Name)
+		}
 		s.WriteString("  " + portInfoStyle.Render(
-			fmt.Sprintf("\uf0e4 Target port: %d.%d   (60 presses over 30s, in parallel with Power ON)",
-				curExt, curSubPort)) + "\n\n")
+			fmt.Sprintf("\uf0e4 Target port: %s   (60 presses over 30s, in parallel with Power ON)",
+				target)) + "\n")
+		savedKey := m.savedBIOSKey(m.port)
+		if savedKey != "" {
+			s.WriteString("  " + helpStyle.Render(fmt.Sprintf("saved default: %s (★) — pick any key to change it", savedKey)) + "\n")
+		}
+		s.WriteString("\n")
 
 		// Render two columns of options to keep things tidy.
 		half := (len(biosKeyOptions) + 1) / 2
@@ -892,14 +942,18 @@ func (m model) View() string {
 					continue
 				}
 				opt := biosKeyOptions[idx]
-				cell := fmt.Sprintf("  [%d] %-4s  %s", idx+1, opt.label, biosKeyHint(opt.label))
+				marker := " "
+				if opt.key == savedKey {
+					marker = "★"
+				}
+				cell := fmt.Sprintf(" %s [%d] %-4s  %s", marker, idx+1, opt.label, biosKeyHint(opt.label))
 				line += lipgloss.NewStyle().Width(36).Render(unselectedStyle.Render(cell))
 			}
 			s.WriteString(line + "\n")
 		}
 		s.WriteString("\n")
 
-		help := helpStyle.Render(fmt.Sprintf("1-%d: pick   ESC: cancel", len(biosKeyOptions)))
+		help := helpStyle.Render(fmt.Sprintf("1-%d: pick (saves to profile)   ESC: cancel", len(biosKeyOptions)))
 		s.WriteString("  " + help + "\n\n")
 		return s.String()
 	}
@@ -1009,14 +1063,23 @@ func (m model) View() string {
 	}
 	left.WriteString("  " + statusRow.String() + "\n")
 
-	// Active-port summary
+	// Active-port summary; include the port's profile name if one is saved
+	// (idea #5) so "2.4" becomes "2.4 (j4yn0)".
 	activeExt := m.activePort/m.portsPerExt + 1
 	activePortNum := m.activePort%m.portsPerExt + 1
 	syncIcon := successStyle.Render("\uf058")
 	if m.activePort != m.port {
-		syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + fmt.Sprintf("%d.%d", activeExt, activePortNum) + ")"
+		activeLabel := fmt.Sprintf("%d.%d", activeExt, activePortNum)
+		if p, ok := m.state.Ports[portExtID(m.activePort, m.portsPerExt)]; ok && p.Name != "" {
+			activeLabel = fmt.Sprintf("%s (%s)", activeLabel, p.Name)
+		}
+		syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + activeLabel + ")"
 	}
-	summary := fmt.Sprintf("\uf0e4 Selected: %d.%d  ", curExt, curSubPort)
+	selLabel := fmt.Sprintf("%d.%d", curExt, curSubPort)
+	if p, ok := m.state.Ports[portExtID(m.port, m.portsPerExt)]; ok && p.Name != "" {
+		selLabel = fmt.Sprintf("%s (%s)", selLabel, p.Name)
+	}
+	summary := fmt.Sprintf("\uf0e4 Selected: %s  ", selLabel)
 	legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
 	left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
 	left.WriteString(legend + "\n")

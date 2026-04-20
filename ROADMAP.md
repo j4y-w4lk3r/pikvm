@@ -30,7 +30,7 @@ Hoist `http.Transport`, `tls.Config`, and the basic-auth header into package-lev
 
 ## Phase 2 — Per-port state + UI polish
 
-### 5. `[ ]` Per-port profiles in `~/.config/pikvm/state.json`
+### 5. `[x]` Per-port profiles in `~/.config/pikvm/state.json`
 Each port gets a JSON object: `name`, `bios_key`, `default_iso`, `tags`, `tailscale_name`, `ssh_user`. The TUI shows `[P] Port: [1] [2] [3] [4] ← j4yn0` instead of bare numbers, restores the last active port across PiKVM reboots, and eliminates the four hard-coded "Boot to BIOS (F7/Del/F2/F3)" entries.
 
 **Why early:** Ideas 6, 7, 11, 13, 14, 22, 25 all build on this.

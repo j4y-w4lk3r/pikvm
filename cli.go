@@ -74,19 +74,35 @@ func parseFlags(args []string) (bool, []string) {
 	return jsonMode, remaining
 }
 
-// parsePort accepts either a linear port ("5") or extender.port form ("2.3").
-// Returns the linear 0-based port. Requires a live /api/switch fetch only
-// when ext.port form is used (so simple integer args don't pay the round-trip).
+// parsePort accepts three forms:
+//
+//	"5"      linear port (0-based)
+//	"2.3"    extender 2, port 3 (1-based) — converted via live /api/switch
+//	"j4yn0"  profile name from state.json (idea #5) — case-insensitive
+//
+// Returns the linear 0-based port. Name resolution is tried FIRST (names can
+// contain digits like "web03" or "j4yn0"); only if no name matches do we try
+// the numeric interpretations.
 func parsePort(s string) (int, error) {
 	if s == "" {
 		return 0, nil
 	}
+
+	// Try profile-name lookup first so "web03", "j4yn0", etc. work.
+	if isLikelyName(s) {
+		st := loadState()
+		if id, ok := resolvePortName(st, s); ok {
+			return parsePort(id)
+		}
+		return 0, fmt.Errorf("no profile named %q (try: pikvm profile list)", s)
+	}
+
 	if strings.Contains(s, ".") {
 		parts := strings.SplitN(s, ".", 2)
 		ext, err1 := strconv.Atoi(parts[0])
 		pno, err2 := strconv.Atoi(parts[1])
 		if err1 != nil || err2 != nil || ext < 1 || pno < 1 {
-			return 0, fmt.Errorf("invalid port %q (use linear like '5' or extender.port like '2.3')", s)
+			return 0, fmt.Errorf("invalid port %q (use linear like '5', extender.port like '2.3', or a profile name)", s)
 		}
 		state := fetchSwitchState()
 		if ext > state.Extenders || pno > state.PortsPerExt {
@@ -94,11 +110,29 @@ func parsePort(s string) (int, error) {
 		}
 		return (ext-1)*state.PortsPerExt + (pno - 1), nil
 	}
+
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
+		// Not a pure integer — maybe it was meant as a profile name after all.
+		st := loadState()
+		if id, ok := resolvePortName(st, s); ok {
+			return parsePort(id)
+		}
 		return 0, fmt.Errorf("invalid port %q", s)
 	}
 	return n, nil
+}
+
+// isLikelyName returns true for strings that look like profile names rather
+// than numbers: anything that contains a letter (ASCII A-Z / a-z). Pure
+// numeric strings (including "2.3") stay numeric.
+func isLikelyName(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r == '-' {
+			return true
+		}
+	}
+	return false
 }
 
 // ----------------------------------------------------------------------------
@@ -133,6 +167,10 @@ func runCLI() {
 	// Fuzzy pickers (fzf)
 	case "pick":
 		cliPick(jsonMode, args[1:])
+
+	// Per-port profiles (idea #5)
+	case "profile":
+		cliProfile(jsonMode, args[1:])
 
 	// Back-compat aliases (old syntax)
 	case "on", "off", "click", "long", "reset-long":
@@ -336,6 +374,206 @@ func stripIcons(s string) string {
 }
 
 // ----------------------------------------------------------------------------
+// Per-port profiles (idea #5)
+// ----------------------------------------------------------------------------
+
+func cliProfile(jsonMode bool, args []string) {
+	if len(args) == 0 {
+		die(jsonMode, "profile", fmt.Errorf("usage: pikvm profile list | get <port> | set <port> k=v [k=v ...] | unset <port>"))
+	}
+	switch args[0] {
+	case "list":
+		cliProfileList(jsonMode)
+	case "get":
+		if len(args) < 2 {
+			die(jsonMode, "profile_get", fmt.Errorf("usage: pikvm profile get <port>"))
+		}
+		cliProfileGet(jsonMode, args[1])
+	case "set":
+		if len(args) < 3 {
+			die(jsonMode, "profile_set", fmt.Errorf("usage: pikvm profile set <port> key=value [key=value ...]\n  keys: name, bios_key, default_iso, tags (comma-sep), tailscale_name, ssh_user, notes"))
+		}
+		cliProfileSet(jsonMode, args[1], args[2:])
+	case "unset":
+		if len(args) < 2 {
+			die(jsonMode, "profile_unset", fmt.Errorf("usage: pikvm profile unset <port>"))
+		}
+		cliProfileUnset(jsonMode, args[1])
+	default:
+		die(jsonMode, "profile", fmt.Errorf("unknown profile subcommand %q", args[0]))
+	}
+}
+
+// canonicalPortID turns whatever the user typed (linear, ext.port, or name)
+// into the stable "ext.port" key we store in state.json.
+func canonicalPortID(s string) (string, error) {
+	// Profile name? Try first — names like "web03" / "j4yn0" would otherwise
+	// get mis-routed into the numeric branch because they contain digits.
+	if isLikelyName(s) {
+		st := loadState()
+		if id, ok := resolvePortName(st, s); ok {
+			return id, nil
+		}
+		return "", fmt.Errorf("no profile named %q", s)
+	}
+	if strings.Contains(s, ".") {
+		return s, nil // already canonical
+	}
+	linear, err := strconv.Atoi(s)
+	if err != nil || linear < 0 {
+		return "", fmt.Errorf("invalid port %q", s)
+	}
+	switchState := fetchSwitchState()
+	return portExtID(linear, switchState.PortsPerExt), nil
+}
+
+func cliProfileList(jsonMode bool) {
+	st := loadState()
+	if jsonMode {
+		emit(true, "profile_list", st, nil)
+		return
+	}
+	if len(st.Ports) == 0 {
+		fmt.Println("(no port profiles saved — try: pikvm profile set 2.3 name=myhost bios_key=F7)")
+		return
+	}
+	for _, id := range sortedPortIDs(st) {
+		p := st.Ports[id]
+		bits := []string{}
+		if p.Name != "" {
+			bits = append(bits, "name="+p.Name)
+		}
+		if p.BIOSKey != "" {
+			bits = append(bits, "bios_key="+p.BIOSKey)
+		}
+		if p.DefaultISO != "" {
+			bits = append(bits, "default_iso="+p.DefaultISO)
+		}
+		if len(p.Tags) > 0 {
+			bits = append(bits, "tags="+strings.Join(p.Tags, ","))
+		}
+		if p.TailscaleName != "" {
+			bits = append(bits, "tailscale_name="+p.TailscaleName)
+		}
+		if p.SSHUser != "" {
+			bits = append(bits, "ssh_user="+p.SSHUser)
+		}
+		if p.Notes != "" {
+			bits = append(bits, "notes="+p.Notes)
+		}
+		fmt.Printf("  %-5s  %s\n", id, strings.Join(bits, "  "))
+	}
+}
+
+func cliProfileGet(jsonMode bool, portArg string) {
+	id, err := canonicalPortID(portArg)
+	if err != nil {
+		die(jsonMode, "profile_get", err)
+	}
+	st := loadState()
+	p := getPortProfile(st, id)
+	if jsonMode {
+		emit(true, "profile_get", map[string]interface{}{"id": id, "profile": p}, nil)
+		return
+	}
+	if isEmptyProfile(p) {
+		fmt.Printf("(no profile for %s)\n", id)
+		return
+	}
+	fmt.Printf("  id:             %s\n", id)
+	if p.Name != "" {
+		fmt.Printf("  name:           %s\n", p.Name)
+	}
+	if p.BIOSKey != "" {
+		fmt.Printf("  bios_key:       %s\n", p.BIOSKey)
+	}
+	if p.DefaultISO != "" {
+		fmt.Printf("  default_iso:    %s\n", p.DefaultISO)
+	}
+	if len(p.Tags) > 0 {
+		fmt.Printf("  tags:           %s\n", strings.Join(p.Tags, ", "))
+	}
+	if p.TailscaleName != "" {
+		fmt.Printf("  tailscale_name: %s\n", p.TailscaleName)
+	}
+	if p.SSHUser != "" {
+		fmt.Printf("  ssh_user:       %s\n", p.SSHUser)
+	}
+	if p.Notes != "" {
+		fmt.Printf("  notes:          %s\n", p.Notes)
+	}
+}
+
+func cliProfileSet(jsonMode bool, portArg string, kvs []string) {
+	id, err := canonicalPortID(portArg)
+	if err != nil {
+		die(jsonMode, "profile_set", err)
+	}
+	st := loadState()
+	p := getPortProfile(st, id)
+
+	for _, kv := range kvs {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			die(jsonMode, "profile_set", fmt.Errorf("expected key=value, got %q", kv))
+		}
+		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		switch k {
+		case "name":
+			p.Name = v
+		case "bios_key":
+			p.BIOSKey = v
+		case "default_iso":
+			p.DefaultISO = v
+		case "tags":
+			if v == "" {
+				p.Tags = nil
+			} else {
+				p.Tags = strings.Split(v, ",")
+				for i := range p.Tags {
+					p.Tags[i] = strings.TrimSpace(p.Tags[i])
+				}
+			}
+		case "tailscale_name":
+			p.TailscaleName = v
+		case "ssh_user":
+			p.SSHUser = v
+		case "notes":
+			p.Notes = v
+		default:
+			die(jsonMode, "profile_set", fmt.Errorf("unknown key %q (valid: name, bios_key, default_iso, tags, tailscale_name, ssh_user, notes)", k))
+		}
+	}
+
+	st = setPortProfile(st, id, p)
+	if err := saveState(st); err != nil {
+		die(jsonMode, "profile_set", err)
+	}
+	if jsonMode {
+		emit(true, "profile_set", map[string]interface{}{"id": id, "profile": p}, nil)
+	} else {
+		fmt.Printf("\uf00c saved profile for %s\n", id)
+	}
+}
+
+func cliProfileUnset(jsonMode bool, portArg string) {
+	id, err := canonicalPortID(portArg)
+	if err != nil {
+		die(jsonMode, "profile_unset", err)
+	}
+	st := loadState()
+	delete(st.Ports, id)
+	if err := saveState(st); err != nil {
+		die(jsonMode, "profile_unset", err)
+	}
+	if jsonMode {
+		emit(true, "profile_unset", map[string]interface{}{"id": id}, nil)
+	} else {
+		fmt.Printf("\uf00c removed profile for %s\n", id)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Fuzzy pickers (fzf)
 // ----------------------------------------------------------------------------
 
@@ -512,13 +750,20 @@ Inspection:
   pikvm info                         Show /api/info (kvmd version, uptime, health)
   pikvm iso list                     List ISOs (PiKVM-side + local ./iso/)
 
-Power / reset (port = linear int or 'ext.port' like '2.3'; default = current active):
+Power / reset (port = linear int '5', ext.port '2.3', OR profile name 'j4yn0'):
   pikvm power on   [port]            Turn power ON
   pikvm power off  [port]            Turn power OFF
   pikvm power click [port]           Power button short press
   pikvm power long  [port]           Power button long press (force shutdown)
   pikvm reset click [port]           Reset button short press
   pikvm reset long  [port]           Reset button long press
+
+Per-port profiles (~/.config/pikvm/state.json):
+  pikvm profile list                 Show all saved profiles
+  pikvm profile get <port>           Show profile for one port
+  pikvm profile set <port> k=v ...   Set fields (name, bios_key, default_iso,
+                                                 tags, tailscale_name, ssh_user, notes)
+  pikvm profile unset <port>         Remove a profile entirely
 
 Fuzzy pickers (need 'fzf' in PATH):
   pikvm pick port                    fzf over ports → set active
@@ -534,7 +779,8 @@ Examples:
   pikvm                              # TUI
   pikvm switch                       # show all ports + signals
   pikvm switch set 2.3               # switch to extender 2 / port 3
-  pikvm power on 2.3                 # power on that port
+  pikvm profile set 2.3 name=j4yn0 bios_key=F7
+  pikvm power on j4yn0               # name-based (from profile)
   pikvm pick iso                     # fzf-pick an ISO and boot it
   pikvm --json switch | jq .         # scriptable JSON
 
