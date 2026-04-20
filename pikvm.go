@@ -331,11 +331,6 @@ type model struct {
 	// /api/info snapshot for the status bar (idea #10)
 	info infoState
 
-	// Live HDMI snapshot of the active port rendered via chafa (idea #8).
-	// Populated by startSnapshotPoller; may be empty (waiting / chafa not
-	// installed / recent fetch failed).
-	snapshot snapshotState
-
 	// Per-port profiles from ~/.config/pikvm/state.json (idea #5). Loaded
 	// once at startup; saveState() is called whenever the TUI learns a new
 	// preference it wants to persist (e.g. after the user picks a BIOS key).
@@ -725,11 +720,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.info = msg.state
 		return m, nil
 
-	case wsSnapshotMsg:
-		// New live snapshot for the grid view's preview panel (idea #8).
-		m.snapshot = msg.state
-		return m, nil
-
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -784,13 +774,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.gridCursor = m.port
 					m.focusMode = ""
 				}
-			}
-
-		case "v":
-			// Toggle the live-video preview polling (idea #8). Only
-			// meaningful inside grid view — otherwise it's a no-op.
-			if m.gridView {
-				setSnapshotPaused(!isSnapshotPaused())
 			}
 
 		case "up", "k":
@@ -1344,72 +1327,12 @@ func (m model) renderGridView() string {
 		sb.WriteString("\n")
 	}
 
-	// Live-video preview panel (idea #8) — placed between the grid and
-	// the help lines so it's always visible without scrolling.
-	if panel := m.renderSnapshotPanel(); panel != "" {
-		sb.WriteString(panel + "\n")
-	}
-
 	legend := helpStyle.Render("legend: V video  U usb  P power  ★ PiKVM-active")
-	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to port   v: toggle preview   g or ESC: back   q: quit")
+	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to port   g or ESC: back   q: quit")
 	sb.WriteString("  " + legend + "\n")
 	sb.WriteString("  " + help + "\n")
 	sb.WriteString("\n  " + m.renderStatusBar() + "\n")
 	return sb.String()
-}
-
-// renderSnapshotPanel draws the live preview block that sits below the grid
-// in grid view. Returns "" when there's nothing to render yet (very first
-// moments of startup, before the poller has fired once).
-func (m model) renderSnapshotPanel() string {
-	var title string
-	activeID := portExtID(m.activePort, m.portsPerExt)
-	if p, ok := m.state.Ports[activeID]; ok && p.Name != "" {
-		title = fmt.Sprintf("preview: %s (%s) — PiKVM-active port", activeID, p.Name)
-	} else {
-		title = fmt.Sprintf("preview: %s — PiKVM-active port", activeID)
-	}
-
-	var body string
-	switch {
-	case isSnapshotPaused():
-		body = helpStyle.Render("paused — press v to resume live preview")
-
-	case m.snapshot.FetchedAt.IsZero():
-		body = helpStyle.Render("(waiting for first snapshot…)")
-
-	case !m.snapshot.ChafaSeen:
-		body = warningStyle.Render("install chafa for live preview:  ") +
-			helpStyle.Render("brew install chafa")
-
-	case m.snapshot.Err != "":
-		body = errorStyle.Render("preview error: " + m.snapshot.Err)
-
-	case m.snapshot.Rendered != "":
-		age := int(time.Since(m.snapshot.FetchedAt).Seconds())
-		body = m.snapshot.Rendered + helpStyle.Render(fmt.Sprintf("  updated %ds ago, refreshes every %ds", age, int(snapshotInterval.Seconds())))
-
-	default:
-		body = helpStyle.Render("(no preview available)")
-	}
-
-	var sb strings.Builder
-	sb.WriteString("  " + portInfoStyle.Render(title) + "\n")
-	sb.WriteString(indentBlock(body, "  ") + "\n")
-	return sb.String()
-}
-
-// indentBlock prepends prefix to every line of s. Used so the chafa image
-// (which spans multiple lines) aligns with the rest of the grid-view text.
-func indentBlock(s, prefix string) string {
-	if s == "" {
-		return ""
-	}
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		lines[i] = prefix + lines[i]
-	}
-	return strings.Join(lines, "\n")
 }
 
 // cellWidth is the visible character width of the interior of one grid cell
@@ -2504,7 +2427,6 @@ func main() {
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	startWebSocket(wsCtx, p)
 	startInfoPoller(wsCtx, p)
-	startSnapshotPoller(wsCtx, p)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)

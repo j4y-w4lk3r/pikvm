@@ -54,7 +54,7 @@ Optional flag that emits structured events (`{"event":"port_changed","port":"2.3
 ### 7. `[x]` Grid view of all ports (toggle with `g`)
 Mosaic of every port across all extenders showing `power_state · video_link · usb_link · profile_name · is_active`. All data is already in `/api/switch`. Toggle from the standard view with `g`.
 
-### 8. `[x]` Snapshot thumbnails inline
+### 8. `[ ]` Snapshot thumbnails inline
 `GET /api/streamer/snapshot?port=N` returns a JPEG. Render each port's snapshot at ~96×54 inside its grid cell using `chafa` (sixel / iTerm2 protocol) or a Go terminal-image library. Refresh every 5 s. A real PiKVM dashboard in the terminal — no browser required.
 
 ---
