@@ -1306,14 +1306,25 @@ func (m model) renderGridView() string {
 		sb.WriteString("  " + row + "\n\n")
 	}
 
-	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to that port   g or ESC: back   q: quit")
+	legend := helpStyle.Render("legend: V video  U usb  P power  ★ PiKVM-active")
+	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to port   g or ESC: back   q: quit")
+	sb.WriteString("  " + legend + "\n")
 	sb.WriteString("  " + help + "\n")
 	sb.WriteString("\n  " + m.renderStatusBar() + "\n")
 	return sb.String()
 }
 
-// renderPortCell is one cell in the grid. Width matches across cells so rows
-// line up nicely when JoinHorizontal'd.
+// renderPortCell is one cell in the grid.
+//
+// We deliberately use ASCII inside the cell (V / U / P for video / USB /
+// power, `·` when a link is down) instead of Nerd Font glyphs. Many
+// terminals render NF glyphs as 2-column wide while lipgloss counts them
+// as 1, which makes cell widths drift by a character and the row borders
+// look jagged. ASCII is always 1 column so every cell lines up.
+//
+// Only ONE colored border is used at a time (the cursor's green). The
+// active port is flagged by a '★' marker next to its ID — no yellow border —
+// so border colors don't change row-to-row and the box chars join cleanly.
 func (m model) renderPortCell(linear int) string {
 	id := portExtID(linear, m.portsPerExt)
 	isActive := linear == m.activePort
@@ -1322,20 +1333,20 @@ func (m model) renderPortCell(linear int) string {
 	// Row 1: port id (+ ★ when PiKVM-active)
 	row1 := id
 	if isActive {
-		row1 += " \u2605" // ★
+		row1 += " \u2605" // ★ — U+2605 BLACK STAR, always 1 column wide
 	}
 
-	// Row 2: profile name (or blank)
+	// Row 2: profile name (truncated)
 	name := ""
 	if p, ok := m.state.Ports[id]; ok && p.Name != "" {
 		name = p.Name
 	}
-	if len(name) > 8 {
-		name = name[:8]
+	if len(name) > 7 {
+		name = name[:7]
 	}
 
 	// Row 3: ATX power
-	power := "—"
+	power := "-"
 	if linear < len(m.powerLeds) {
 		if m.powerLeds[linear] {
 			power = "on"
@@ -1344,8 +1355,18 @@ func (m model) renderPortCell(linear int) string {
 		}
 	}
 
-	// Row 4: live icons (video / usb / power)
-	icons := m.portStatusGlyphs(linear)
+	// Row 4: ASCII flags — V / U / P lit in success-green when present, dim
+	// middle-dot when absent. All characters are single-column so the cell
+	// width stays stable across terminals and fonts.
+	flag := func(arr []bool, lit string) string {
+		if linear < len(arr) && arr[linear] {
+			return successStyle.Render(lit)
+		}
+		return helpStyle.Render("\u00B7") // middle dot
+	}
+	icons := flag(m.videoLinks, "V") + " " +
+		flag(m.usbLinks, "U") + " " +
+		flag(m.powerLeds, "P")
 
 	content := strings.Join([]string{row1, name, power, icons}, "\n")
 
@@ -1353,18 +1374,14 @@ func (m model) renderPortCell(linear int) string {
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("#444444")).
 		Width(10).
+		Height(4).
 		Padding(0, 1).
 		MarginRight(1)
 
-	switch {
-	case isCursor:
+	if isCursor {
 		style = style.
 			BorderForeground(lipgloss.Color("#9bf09d")).
-			Foreground(lipgloss.Color("#9bf09d")).
 			Bold(true)
-	case isActive:
-		style = style.
-			BorderForeground(lipgloss.Color("#FFD700"))
 	}
 
 	return style.Render(content)

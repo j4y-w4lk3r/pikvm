@@ -38,7 +38,9 @@ func TestGridRender(t *testing.T) {
 		"2.1", "2.2", "2.3", "2.4",
 		"j4yn0", "vault", "pi",
 		"on", "off",
-		"\u2605", // star on active port
+		"\u2605",           // ★ on active port
+		"V", "U", "P",      // ASCII flag row
+		"legend: V video",  // legend line
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grid render missing %q", want)
