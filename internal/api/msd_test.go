@@ -1,34 +1,31 @@
-package main
+package api
 
 import (
 	"testing"
 	"time"
+
+	"pikvm/internal/config"
 )
 
-// TestISOCache calls fetchAvailableISOEntries three times against the live
-// PiKVM and prints timing + cache behaviour. It uses the real env (same
-// baseURL/creds pikvm.go uses) so it needs a reachable PiKVM.
-//
-// Run:  go test -v -run TestISOCache ./...
+// TestISOCache calls FetchAvailableISOEntries three times against the live
+// PiKVM and prints timing + cache behaviour. Skips if config is missing.
 func TestISOCache(t *testing.T) {
-	if err := loadEnv(); err != nil {
-		t.Skipf(".env missing, skipping: %v", err)
+	if err := config.Load(); err != nil {
+		t.Skipf("config missing, skipping: %v", err)
 	}
 
-	// First call: cold (no cache)
 	t.Log("--- cold call (no cache)")
 	start := time.Now()
-	entries, err := fetchAvailableISOEntries()
+	entries, err := FetchAvailableISOEntries()
 	coldDur := time.Since(start)
 	if err != nil {
 		t.Fatalf("cold fetch: %v", err)
 	}
 	t.Logf("  got %d entries in %v", len(entries), coldDur)
 
-	// Second call: should hit cache instantly
 	t.Log("--- warm call (cached)")
 	start = time.Now()
-	entries2, err := fetchAvailableISOEntries()
+	entries2, err := FetchAvailableISOEntries()
 	warmDur := time.Since(start)
 	if err != nil {
 		t.Fatalf("warm fetch: %v", err)
@@ -36,23 +33,21 @@ func TestISOCache(t *testing.T) {
 	t.Logf("  got %d entries in %v", len(entries2), warmDur)
 
 	if warmDur > coldDur/10 {
-		t.Errorf("cache does not appear to be hit: warm=%v, cold=%v (expected warm << cold)", warmDur, coldDur)
+		t.Errorf("cache does not appear to be hit: warm=%v, cold=%v", warmDur, coldDur)
 	}
 	if len(entries2) != len(entries) {
-		t.Errorf("cached result differs: cold=%d entries, warm=%d entries", len(entries), len(entries2))
+		t.Errorf("cached result differs: cold=%d, warm=%d", len(entries), len(entries2))
 	}
 
-	// Invalidate and confirm next call refetches
 	t.Log("--- invalidate + call again (cold again)")
-	invalidateISOCache()
+	InvalidateISOCache()
 	start = time.Now()
-	entries3, err := fetchAvailableISOEntries()
+	entries3, err := FetchAvailableISOEntries()
 	coldAgainDur := time.Since(start)
 	if err != nil {
 		t.Fatalf("invalidated fetch: %v", err)
 	}
 	t.Logf("  got %d entries in %v", len(entries3), coldAgainDur)
-
 	if coldAgainDur < warmDur {
 		t.Errorf("expected post-invalidate to be slower than cached: post=%v, cached=%v", coldAgainDur, warmDur)
 	}

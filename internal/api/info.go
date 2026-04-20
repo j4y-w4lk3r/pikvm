@@ -1,14 +1,10 @@
 // Periodic /api/info poller (roadmap idea #10).
 //
 // PiKVM exposes /api/info with the host's kvmd version, kernel info, hostname,
-// uptime, and basic health metrics (CPU/memory/temperature). Unlike /api/switch,
-// this data does NOT push over /api/ws — the WS "info" event only carries
-// auth.enabled. So we poll periodically.
-//
-// The poller runs in a single goroutine alongside startWebSocket, fires the
-// initial fetch immediately, then re-fetches every infoPollInterval.
+// uptime, and basic health metrics (CPU/memory/temperature). This data does
+// NOT push over /api/ws, so we poll every InfoPollInterval.
 
-package main
+package api
 
 import (
 	"context"
@@ -20,39 +16,37 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const infoPollInterval = 30 * time.Second
+// InfoPollInterval is the gap between /api/info fetches.
+const InfoPollInterval = 30 * time.Second
 
-// infoState is the slice of /api/info we care about for the status bar.
-type infoState struct {
-	Hostname    string  `json:"hostname"`     // meta.server.host       (e.g. "j4ypi0")
-	KvmdVersion string  `json:"kvmd_version"` // system.kvmd.version    (e.g. "4.127")
-	Platform    string  `json:"platform"`     // hw.platform.model      (e.g. "v4plus")
-	UptimeTotal int64   `json:"uptime_total"` // uptime.total           (seconds)
-	UptimeDays  int     `json:"uptime_days"`  // uptime.parts.days
-	UptimeHours int     `json:"uptime_hours"` // uptime.parts.hours
-	UptimeMins  int     `json:"uptime_mins"`  // uptime.parts.minutes
-	CPUPercent  int     `json:"cpu_percent"`  // hw.health.cpu.percent
-	MemPercent  float64 `json:"mem_percent"`  // hw.health.mem.percent
-	CPUTempC    float64 `json:"cpu_temp_c"`   // hw.health.temp.cpu     (Celsius)
+// InfoState is the slice of /api/info we care about for the status bar.
+type InfoState struct {
+	Hostname    string  `json:"hostname"`
+	KvmdVersion string  `json:"kvmd_version"`
+	Platform    string  `json:"platform"`
+	UptimeTotal int64   `json:"uptime_total"`
+	UptimeDays  int     `json:"uptime_days"`
+	UptimeHours int     `json:"uptime_hours"`
+	UptimeMins  int     `json:"uptime_mins"`
+	CPUPercent  int     `json:"cpu_percent"`
+	MemPercent  float64 `json:"mem_percent"`
+	CPUTempC    float64 `json:"cpu_temp_c"`
 }
 
-// wsInfoMsg is the Bubble Tea message produced by the poller. Reusing the
-// 'ws' prefix keeps the message-type naming consistent with WS-driven msgs
-// even though /api/info itself isn't streamed.
-type wsInfoMsg struct{ state infoState }
+// InfoMsg is the Bubble Tea message produced by the poller.
+type InfoMsg struct{ State InfoState }
 
-// startInfoPoller runs the /api/info fetcher in its own goroutine.
-// The first fetch fires immediately so the status bar is populated within
-// ~1s of TUI launch; subsequent fetches every infoPollInterval.
-func startInfoPoller(ctx context.Context, prog *tea.Program) {
+// StartInfoPoller runs the /api/info fetcher in its own goroutine. First
+// fetch fires immediately, then every InfoPollInterval.
+func StartInfoPoller(ctx context.Context, prog *tea.Program) {
 	go func() {
 		fire := func() {
-			if state, ok := fetchInfoState(); ok {
-				prog.Send(wsInfoMsg{state: state})
+			if state, ok := FetchInfoState(); ok {
+				prog.Send(InfoMsg{State: state})
 			}
 		}
 		fire()
-		ticker := time.NewTicker(infoPollInterval)
+		ticker := time.NewTicker(InfoPollInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -65,17 +59,17 @@ func startInfoPoller(ctx context.Context, prog *tea.Program) {
 	}()
 }
 
-// fetchInfoState calls /api/info once and returns the parsed slice we care
+// FetchInfoState calls /api/info once and returns the parsed slice we care
 // about. Returns ok=false on any error so the caller can skip the Send.
-func fetchInfoState() (infoState, bool) {
-	resp, err := pikvmDo("GET", "/info", nil, 5*time.Second)
+func FetchInfoState() (InfoState, bool) {
+	resp, err := Do("GET", "/info", nil, 5*time.Second)
 	if err != nil {
-		return infoState{}, false
+		return InfoState{}, false
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return infoState{}, false
+		return InfoState{}, false
 	}
 
 	var parsed struct {
@@ -119,10 +113,10 @@ func fetchInfoState() (infoState, bool) {
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil || !parsed.OK {
-		return infoState{}, false
+		return InfoState{}, false
 	}
 
-	return infoState{
+	return InfoState{
 		Hostname:    parsed.Result.Meta.Server.Host,
 		KvmdVersion: parsed.Result.System.Kvmd.Version,
 		Platform:    parsed.Result.HW.Platform.Model,
@@ -136,8 +130,8 @@ func fetchInfoState() (infoState, bool) {
 	}, true
 }
 
-// formatUptime turns the parts into a compact "8d23h" / "3h27m" / "47s" form.
-func formatUptime(s infoState) string {
+// FormatUptime turns the parts into a compact "8d23h" / "3h27m" / "47s" form.
+func FormatUptime(s InfoState) string {
 	if s.UptimeDays > 0 {
 		return fmt.Sprintf("%dd%dh", s.UptimeDays, s.UptimeHours)
 	}

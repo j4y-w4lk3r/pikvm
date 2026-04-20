@@ -63,7 +63,7 @@ Mosaic of every port across all extenders showing `power_state · video_link · 
 
 Best done before any more big features land, because everything after this benefits.
 
-### 16. `[ ]` Split `pikvm.go` into packages
+### 16. `[x]` Split `pikvm.go` into packages
 ```
 internal/
   pikvm/      # PiKVM API client (switch, ATX, MSD, HID, snapshot, ws)

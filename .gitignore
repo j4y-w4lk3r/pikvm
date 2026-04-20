@@ -5,8 +5,8 @@ config.json
 __pycache__/
 *.pyc
 
-# Build artifacts
-pikvm
+# Build artifacts (root binary only; do NOT match cmd/pikvm/ source dir)
+/pikvm
 
 # Log files
 *.log
