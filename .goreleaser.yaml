@@ -84,8 +84,8 @@ brews:
     description: "PiKVM ATX power control — terminal UI and CLI"
     license: MIT
     commit_author:
-      name: goreleaserbot
-      email: bot@goreleaser.com
+      name: j4y
+      email: j4y_w4lk3r@pobox.com
     commit_msg_template: "pikvm: bump to {{ .Tag }}"
     directory: Formula
     install: |
