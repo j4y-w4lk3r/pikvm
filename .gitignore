@@ -27,3 +27,6 @@ iso/
 # PXE generated files
 pxe/files/
 
+
+# Local scratch space (installer staging, throwaway files)
+.scratch/
