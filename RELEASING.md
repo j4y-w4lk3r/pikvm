@@ -27,7 +27,17 @@ Empty is fine — the formula is auto-pushed during the first release.
 
 ### 2. Give GoReleaser a PAT for the tap repo
 
-`GITHUB_TOKEN` (auto-provided to Actions) can write to **this** repo only. To also push commits to `homebrew-pikvm`, create a fine-grained PAT scoped to that repo with `Contents: Read and write`. Save it as a repo secret here:
+`GITHUB_TOKEN` (auto-provided to Actions) can write to **this** repo only. To also push commits to `homebrew-pikvm`, create a fine-grained PAT scoped to that repo with `Contents: Read and write`. Save it as a repo secret named `HOMEBREW_TAP_GITHUB_TOKEN`.
+
+The fastest path is the **automated helper**:
+
+```bash
+make brew-pat
+```
+
+It opens the PAT page in your browser, prompts for the token (hidden input), optionally saves to 1Password, then sets the GitHub Actions secret via `gh secret set` — no web UI clicks for the secret-storage step.
+
+Manual fallback (if you prefer GUI):
 
 ```
 Settings → Secrets and variables → Actions → New repository secret
@@ -35,41 +45,51 @@ Name:  HOMEBREW_TAP_GITHUB_TOKEN
 Value: <PAT>
 ```
 
-### 3. Set up an AUR account + SSH key (one-time)
+The PAT itself is what goes in the Value field — nothing else, no quotes, no prefix.
 
-The AUR is its own git host (not GitHub). It uses SSH for authenticated pushes.
+### 3. AUR account + SSH key + first import (one-time)
 
-1. Register an account at <https://aur.archlinux.org/register> (free; choose any username).
-2. On your Mac, generate an SSH key dedicated to AUR if you don't already have one:
+The AUR is its own git host (not GitHub) and uses SSH for authenticated pushes.
+
+The fastest path is the **automated helper** — run after registering at <https://aur.archlinux.org/register>:
+
+```bash
+make aur-setup
+```
+
+It walks you through:
+1. Generating a dedicated `~/.ssh/aur_ed25519` (with optional 1Password-stored passphrase)
+2. Appending the `Host aur.archlinux.org` block to `~/.ssh/config` (idempotent)
+3. Copying the public key to your clipboard + opening the AUR "My Account" page
+4. Smoke-testing `ssh aur@aur.archlinux.org help`
+5. Cloning `pikvm-bin.git` and pushing the initial PKGBUILD + .SRCINFO from `arch/`
+
+Manual flow (in case you want to do it step-by-step):
+
+1. Register at <https://aur.archlinux.org/register>. PGP fingerprint and SSH key fields can be left blank — fill the SSH key on the next page after registering.
+2. Generate a dedicated key:
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/aur_ed25519 -C "aur@$USER"
    ```
-3. Copy the public key into your AUR account: My Account → SSH Public Key → paste `~/.ssh/aur_ed25519.pub`.
-4. Tell SSH to use it for the AUR host. Append to `~/.ssh/config`:
-   ```
+3. Paste the contents of `~/.ssh/aur_ed25519.pub` into your AUR account: My Account → SSH Public Key → Update.
+4. Tell SSH to use it:
+   ```bash
+   cat >> ~/.ssh/config <<'EOF'
    Host aur.archlinux.org
        IdentityFile ~/.ssh/aur_ed25519
        User aur
+   EOF
    ```
 5. Smoke-test:
    ```bash
-   ssh aur@aur.archlinux.org help
-   # → "Welcome to the AUR..." means it's working.
+   ssh aur@aur.archlinux.org help    # → "Welcome to the AUR..." means it's working
    ```
-
-### 4. Bootstrap the `pikvm-bin` AUR package
-
-This is a one-time push to create the package on the AUR. After this, releases just bump `pkgver` automatically.
-
-```bash
-# Clone the (empty) AUR repo for pikvm-bin
-git clone ssh://aur@aur.archlinux.org/pikvm-bin.git /tmp/pikvm-aur
-cp arch/PKGBUILD arch/.SRCINFO /tmp/pikvm-aur/
-cd /tmp/pikvm-aur
-git add PKGBUILD .SRCINFO
-git commit -m "Initial import: pikvm-bin"
-git push origin master
-```
+6. Bootstrap the package (one-time push):
+   ```bash
+   git clone ssh://aur@aur.archlinux.org/pikvm-bin.git /tmp/pikvm-aur
+   cp arch/PKGBUILD arch/.SRCINFO /tmp/pikvm-aur/
+   cd /tmp/pikvm-aur && git add . && git commit -m "Initial import: pikvm-bin" && git push origin master
+   ```
 
 After this, `aur.archlinux.org/packages/pikvm-bin` exists and any user can `yay -S pikvm-bin`.
 
