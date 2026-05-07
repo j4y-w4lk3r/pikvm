@@ -6,9 +6,10 @@
 #   1. Cross-compiles the binary for macOS (amd64 + arm64) and Linux
 #      (amd64 + arm64).
 #   2. Archives each build as a tarball with checksums.
-#   3. Creates a GitHub release from the tag with a generated changelog.
-#   4. Commits a Homebrew formula into github.com/lso0/homebrew-pikvm
-#      (see `brews:` block) so users can `brew install lso0/pikvm/pikvm`.
+#   3. Builds native Linux packages (.deb / .rpm / .pkg.tar.zst — Arch).
+#   4. Creates a GitHub release from the tag with a generated changelog.
+#   5. Commits a Homebrew formula into github.com/j4y-w4lk3r/homebrew-pikvm
+#      (see `brews:` block) so users can `brew install j4y-w4lk3r/pikvm/pikvm`.
 #
 # Test locally (no GitHub, no tag push) with:
 #   goreleaser release --snapshot --clean
@@ -54,6 +55,31 @@ archives:
       - ROADMAP.md
       - LICENSE*
 
+# Native Linux packages — produces .deb (Debian/Ubuntu), .rpm (Fedora/RHEL),
+# and .pkg.tar.zst (Arch). Users can `pacman -U pikvm-*.pkg.tar.zst`,
+# `dpkg -i pikvm_*.deb`, or `rpm -i pikvm-*.rpm`. The AUR pikvm-bin package
+# (arch/PKGBUILD) downloads our .tar.gz archives instead — keeps the GitHub
+# release's primary artifact stable for non-Arch users too.
+nfpms:
+  - id: pikvm-pkg
+    package_name: pikvm
+    homepage: https://github.com/j4y-w4lk3r/pikvm
+    maintainer: j4y <j4y_w4lk3r@pobox.com>
+    description: "PiKVM ATX power control — terminal UI and CLI"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - archlinux  # produces .pkg.tar.zst
+    bindir: /usr/bin
+    section: utils
+    recommends:
+      - fzf
+    suggests:
+      - ffmpeg
+      - mpv
+      - chafa
+
 checksum:
   name_template: 'checksums.txt'
 
@@ -71,16 +97,16 @@ changelog:
       - '^chore:'
 
 # Homebrew tap — goreleaser auto-commits this .rb into the configured repo.
-# On first release, create the tap repo (lso0/homebrew-pikvm) manually;
+# On first release, create the tap repo (j4y-w4lk3r/homebrew-pikvm) manually;
 # goreleaser will push the Formula/pikvm.rb on every subsequent tag.
 brews:
   - name: pikvm
     repository:
-      owner: lso0
+      owner: j4y-w4lk3r
       name: homebrew-pikvm
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/lso0/pikvm
+    homepage: https://github.com/j4y-w4lk3r/pikvm
     description: "PiKVM ATX power control — terminal UI and CLI"
     license: MIT
     commit_author:
@@ -110,10 +136,21 @@ release:
     ## PiKVM v{{ .Version }}
 
     Pre-built static binaries for macOS (Intel + Apple Silicon) and Linux
-    (x86_64 + arm64) are attached below. Or install via Homebrew:
+    (x86_64 + arm64) are attached below.
 
+    ### Install
+
+    **macOS / Linux (Homebrew):**
     ```
-    brew install lso0/pikvm/pikvm
+    brew install j4y-w4lk3r/pikvm/pikvm
     ```
+
+    **Arch Linux (AUR):**
+    ```
+    yay -S pikvm-bin       # or: paru -S pikvm-bin
+    ```
+
+    **Debian / Ubuntu:** download the `.deb` and `sudo dpkg -i pikvm_*.deb`
+    **Fedora / RHEL:** download the `.rpm` and `sudo rpm -i pikvm-*.rpm`
   footer: |
-    **Full changelog**: https://github.com/lso0/pikvm/compare/{{ .PreviousTag }}...{{ .Tag }}
+    **Full changelog**: https://github.com/j4y-w4lk3r/pikvm/compare/{{ .PreviousTag }}...{{ .Tag }}

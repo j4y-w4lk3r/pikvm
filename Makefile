@@ -2,7 +2,7 @@
 # you can always invoke the underlying commands directly. See README for
 # the full workflow.
 
-.PHONY: build test vet lint fmt install snapshot release clean help
+.PHONY: build test vet lint fmt install snapshot release aur-bump clean help
 
 BIN := pikvm
 PKG := ./cmd/pikvm
@@ -32,6 +32,10 @@ snapshot: ## Build all release targets locally into ./dist/ (no push)
 
 release: ## Cut a release on HEAD — requires a vX.Y.Z tag already pushed
 	goreleaser release --clean
+
+aur-bump: ## Bump pikvm-bin AUR package to VER (run after each release)
+	@if [ -z "$(VER)" ]; then echo "usage: make aur-bump VER=0.1.0"; exit 1; fi
+	bash arch/aur-bump.sh $(VER)
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN) dist/

@@ -55,14 +55,35 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 **Homebrew (macOS + Linux)** — easiest:
 
 ```bash
-brew install lso0/pikvm/pikvm
+brew install j4y-w4lk3r/pikvm/pikvm
 pikvm                     # launch the TUI from anywhere
 pikvm help                # CLI surface
 ```
 
-This pulls the latest GitHub release and symlinks `pikvm` onto your `PATH`. Updates via `brew upgrade pikvm`.
+Pulls the latest GitHub release and symlinks `pikvm` onto your `PATH`. Updates with `brew upgrade pikvm`.
 
-**Pre-built binary** — download the right tarball from the [releases page](https://github.com/lso0/pikvm/releases), extract, and move `pikvm` onto your `PATH`.
+**Arch Linux (AUR)** — for `yay` / `paru` users:
+
+```bash
+yay -S pikvm-bin          # or: paru -S pikvm-bin
+```
+
+Pulls the same release tarball, packages it as `.pkg.tar.zst`, and installs to `/usr/bin/pikvm`. Updates when `pacman -Syu` finds a newer `pkgver`.
+
+**Debian / Ubuntu** — `.deb` from the releases page:
+
+```bash
+curl -LO https://github.com/j4y-w4lk3r/pikvm/releases/latest/download/pikvm_<version>_linux_amd64.deb
+sudo dpkg -i pikvm_*.deb
+```
+
+**Fedora / RHEL** — `.rpm` from the releases page:
+
+```bash
+sudo rpm -i https://github.com/j4y-w4lk3r/pikvm/releases/latest/download/pikvm-<version>-1.x86_64.rpm
+```
+
+**Pre-built binary, any platform** — download the right tarball from the [releases page](https://github.com/j4y-w4lk3r/pikvm/releases), extract, move `pikvm` onto your `PATH`.
 
 **Build from source** — if you're hacking on it:
 
