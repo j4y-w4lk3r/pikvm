@@ -2,25 +2,29 @@
 # One-time setup helper for the pikvm-bin AUR package.
 #
 # What this automates (everything except the AUR website registration):
-#   1. Generates a dedicated SSH key at ~/.ssh/aur_ed25519
-#   2. (Optional) saves the key passphrase into 1Password via `op`
-#   3. Idempotently appends the Host-block to ~/.ssh/config
-#   4. Copies the public key to the clipboard (macOS pbcopy)
-#   5. Opens the AUR "My Account" page in your browser
-#   6. Waits for you to paste + save it on the AUR site
-#   7. Smoke-tests `ssh aur@aur.archlinux.org help`
-#   8. Bootstraps the pikvm-bin AUR repo with PKGBUILD + .SRCINFO from this repo
+#   1. Generates a dedicated SSH key with one of three protection modes:
+#        - YubiKey (FIDO2 ed25519-sk)  → ~/.ssh/aur_ed25519_sk
+#        - Passphrase (with optional 1Password storage)  → ~/.ssh/aur_ed25519
+#        - None (no passphrase)  → ~/.ssh/aur_ed25519
+#   2. Idempotently appends the Host block to ~/.ssh/config
+#   3. Copies the public key to the clipboard (macOS pbcopy / xclip / wl-copy)
+#   4. Opens the AUR "My Account" page in your browser
+#   5. Waits for you to paste + save it on the AUR site
+#   6. Smoke-tests `ssh aur@aur.archlinux.org help`
+#   7. Bootstraps the pikvm-bin AUR repo with PKGBUILD + .SRCINFO from this repo
 #
 # Run from the repo root:
-#   bash arch/aur-setup.sh
+#   bash arch/aur-setup.sh        # or:  make aur-setup
 #
 # Prerequisites:
 #   - You've already registered an AUR account at https://aur.archlinux.org/register
-#   - macOS or Linux with: ssh-keygen, ssh, git, pbcopy/xclip (optional), op (optional)
+#   - macOS or Linux with: ssh-keygen, ssh, git
+#   - For YubiKey: OpenSSH ≥ 8.2 (macOS Sonoma+ has 9.0+) and a YubiKey 5+ with FIDO2
+#   - Optional: pbcopy/xclip/wl-copy (clipboard), op (1Password CLI)
 
 set -euo pipefail
 
-KEY="$HOME/.ssh/aur_ed25519"
+KEY=""  # populated by generate_key based on the chosen protection mode
 CFG="$HOME/.ssh/config"
 HOST_BLOCK="Host aur.archlinux.org"
 AUR_HOST="aur@aur.archlinux.org"
@@ -33,36 +37,93 @@ red() { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
 ask() { read -r -p "$1 [y/N]: " ans; [[ "$ans" =~ ^[Yy] ]]; }
 
 # ---------------------------------------------------------------------------
-# 1. SSH key
+# 1. SSH key — choose hardware (YubiKey FIDO2) or software (passphrase / none)
 # ---------------------------------------------------------------------------
 
-if [ -f "$KEY" ]; then
-    yellow "↻  $KEY already exists — keeping it (delete first if you want to regenerate)"
-else
-    green "→  Generating dedicated AUR SSH key at $KEY"
-    PASSPHRASE=""
-    if ask "    Use a passphrase? (more secure; can be saved to 1Password below)"; then
-        read -r -s -p "    Passphrase: " PASSPHRASE; echo
+generate_key_yubikey() {
+    KEY="$HOME/.ssh/aur_ed25519_sk"
+    if [ -f "$KEY" ] || [ -f "${KEY}.pub" ]; then
+        yellow "↻  $KEY already exists — keeping it"
+        return
     fi
-    ssh-keygen -t ed25519 -f "$KEY" -C "aur@$USER" -N "$PASSPHRASE"
-    green "✓  Key generated"
+    green "→  Generating YubiKey-backed (ed25519-sk) AUR SSH key"
+    cat <<'EOF'
+   You'll see one or two prompts from your YubiKey:
+     - Touch the key when it blinks (always required)
+     - Enter the FIDO2 PIN (if the key has one set)
+EOF
+    # -O resident       : credential is stored ON the YubiKey, so you can
+    #                     re-import on another Mac via `ssh-keygen -K`
+    # -O application=…  : label so multiple resident credentials don't collide
+    # (omitting -O verify-required — touch is enough; add it for PIN-on-every-use)
+    if ! ssh-keygen -t ed25519-sk -f "$KEY" \
+            -O resident -O application=ssh:aur \
+            -C "aur-yubikey@$USER"; then
+        red "✗  ssh-keygen failed. Common causes:"
+        red "    - YubiKey not inserted, or not the active FIDO authenticator"
+        red "    - YubiKey firmware < 5 (no FIDO2 support)"
+        red "    - OpenSSH < 8.2:  $(ssh -V 2>&1)"
+        red "   Try option 2 (passphrase) or 3 (none) instead."
+        exit 1
+    fi
+    green "✓  YubiKey-backed key created. The private key NEVER leaves the YubiKey."
+    green "   Re-import on another Mac later with:"
+    green "     ssh-keygen -K -f ~/.ssh/imported_aur"
+}
 
-    # Optional: save passphrase to 1Password
+generate_key_passphrase() {
+    KEY="$HOME/.ssh/aur_ed25519"
+    if [ -f "$KEY" ]; then
+        yellow "↻  $KEY already exists — keeping it"
+        return
+    fi
+    read -r -s -p "    Passphrase: " PASSPHRASE; echo
+    ssh-keygen -t ed25519 -f "$KEY" -C "aur@$USER" -N "$PASSPHRASE"
+    green "✓  Key generated (passphrase-protected)"
+
     if [ -n "$PASSPHRASE" ] && command -v op >/dev/null 2>&1; then
-        if ask "    Save this passphrase to 1Password under 'AUR SSH Key'?"; then
-            op item create \
-                --category "Secure Note" \
-                --title "AUR SSH Key" \
-                --vault "Private" \
-                "passphrase=$PASSPHRASE" \
-                "username=$(whoami)" \
-                "key_path=$KEY" \
-                "notes=Passphrase for the dedicated AUR ed25519 SSH key. Used for ssh aur@aur.archlinux.org and pushing AUR packages." \
-                >/dev/null
-            green "✓  Saved to 1Password — retrieve with: op read 'op://Private/AUR SSH Key/passphrase'"
+        if ask "    Save the passphrase to 1Password under 'AUR SSH Key'?"; then
+            local vault
+            vault=$(op vault list --format=json | jq -r '.[] | select(.name=="Private") | .name' 2>/dev/null || true)
+            [ -z "$vault" ] && vault=$(op vault list --format=json | jq -r '.[0].name' 2>/dev/null || true)
+            if [ -n "$vault" ]; then
+                op item create \
+                    --category "Secure Note" \
+                    --title "AUR SSH Key" \
+                    --vault "$vault" \
+                    "passphrase[concealed]=$PASSPHRASE" \
+                    "username=$(whoami)" \
+                    "key_path=$KEY" \
+                    "notes=Passphrase for the dedicated AUR ed25519 SSH key. Used by ssh aur@aur.archlinux.org for AUR package pushes." \
+                    >/dev/null
+                green "✓  Saved to 1Password vault '$vault' — retrieve with: op read 'op://$vault/AUR SSH Key/passphrase'"
+            fi
         fi
     fi
-fi
+}
+
+generate_key_none() {
+    KEY="$HOME/.ssh/aur_ed25519"
+    if [ -f "$KEY" ]; then
+        yellow "↻  $KEY already exists — keeping it"
+        return
+    fi
+    ssh-keygen -t ed25519 -f "$KEY" -C "aur@$USER" -N ""
+    green "✓  Key generated (no passphrase — beware: anyone with file access can use it)"
+}
+
+echo
+echo "How should the AUR SSH key be protected?"
+echo "  1) YubiKey  (FIDO2 ed25519-sk)  — private key on hardware, touch to use   [recommended]"
+echo "  2) Passphrase                   — software key, encrypted at rest, optionally saved to 1Password"
+echo "  3) None                         — software key, no protection (fastest, least safe)"
+read -r -p "Choose [1/2/3] (default 1): " choice
+case "${choice:-1}" in
+    1) generate_key_yubikey ;;
+    2) generate_key_passphrase ;;
+    3) generate_key_none ;;
+    *) red "✗ invalid choice"; exit 1 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 2. ~/.ssh/config
