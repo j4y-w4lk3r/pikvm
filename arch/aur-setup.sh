@@ -52,23 +52,48 @@ generate_key_yubikey() {
      - Touch the key when it blinks (always required)
      - Enter the FIDO2 PIN (if the key has one set)
 EOF
-    # -O resident       : credential is stored ON the YubiKey, so you can
-    #                     re-import on another Mac via `ssh-keygen -K`
-    # -O application=…  : label so multiple resident credentials don't collide
-    # (omitting -O verify-required — touch is enough; add it for PIN-on-every-use)
-    if ! ssh-keygen -t ed25519-sk -f "$KEY" \
+
+    # Attempt 1: resident key on YubiKey (re-importable via `ssh-keygen -K`).
+    # This requires a recent libfido2 ↔ YubiKey firmware combo and is still
+    # flaky in 2026 — it commonly fails with "Key enrollment failed: invalid
+    # format" on otherwise-working setups. We try it because the UX win is
+    # nice when it works, but transparently fall back when it doesn't.
+    rm -f "$KEY" "${KEY}.pub" 2>/dev/null
+    if ssh-keygen -t ed25519-sk -f "$KEY" \
             -O resident -O application=ssh:aur \
-            -C "aur-yubikey@$USER"; then
-        red "✗  ssh-keygen failed. Common causes:"
-        red "    - YubiKey not inserted, or not the active FIDO authenticator"
-        red "    - YubiKey firmware < 5 (no FIDO2 support)"
-        red "    - OpenSSH < 8.2:  $(ssh -V 2>&1)"
-        red "   Try option 2 (passphrase) or 3 (none) instead."
-        exit 1
+            -C "aur-yubikey@$USER" 2>/tmp/ssh-keygen-err; then
+        green "✓  Resident key created on YubiKey."
+        green "   Re-import on another Mac later with:  ssh-keygen -K -f ~/.ssh/imported_aur"
+        return
     fi
-    green "✓  YubiKey-backed key created. The private key NEVER leaves the YubiKey."
-    green "   Re-import on another Mac later with:"
-    green "     ssh-keygen -K -f ~/.ssh/imported_aur"
+
+    # Attempt 2: non-resident ed25519-sk (the simpler form). The on-disk
+    # handle file is required to USE the key, but the actual private bytes
+    # still live on the YubiKey hardware — the handle is just a pointer.
+    yellow "↻  resident-key enrollment failed; trying simpler non-resident form..."
+    if grep -qiE "invalid format|cred prot|credentialProtection" /tmp/ssh-keygen-err 2>/dev/null; then
+        yellow "    (cause: libfido2 / YubiKey firmware version mismatch — common, harmless)"
+    fi
+    rm -f "$KEY" "${KEY}.pub" 2>/dev/null
+    if ssh-keygen -t ed25519-sk -f "$KEY" -C "aur-yubikey@$USER"; then
+        green "✓  Non-resident YubiKey key created. Private bytes live on YubiKey."
+        yellow "   Note: ${KEY##*/} (the on-disk handle) is required to USE this key."
+        yellow "   It contains no secret material, but back it up if you reformat."
+        return
+    fi
+
+    # Both failed.
+    red "✗  ssh-keygen failed for both resident and non-resident keys."
+    red "    Likely cause: libfido2 mismatch with YubiKey firmware."
+    red "    Workarounds:"
+    red "      - Update Homebrew openssh + libfido2:"
+    red "          brew upgrade openssh libfido2"
+    red "      - Or use a different OpenSSH (Homebrew's vs system):"
+    red "          /opt/homebrew/bin/ssh-keygen -t ed25519-sk -f $KEY -C 'aur-yubikey@$USER'"
+    red "      - Or pick option 2 (passphrase) on next run."
+    red "    Last ssh-keygen error:"
+    red "      $(cat /tmp/ssh-keygen-err 2>/dev/null | tail -5)"
+    exit 1
 }
 
 generate_key_passphrase() {
