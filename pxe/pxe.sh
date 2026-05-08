@@ -22,17 +22,18 @@ ENV_FILE="$PROJECT_DIR/.env"
 # Configuration (loaded from .env)
 ISO_PATH=""
 UBUNTU_PASSWORD=""
-# Default to Raspberry Pi (can be overridden by .env)
-PXE_USER="${PXE_USER:-wgr0}"
-PXE_HOST="${PXE_HOST:-100.74.180.50}"
+# Defaults are placeholders — override via .env (PXE_USER / PXE_HOST) so
+# your actual SSH credentials never end up in the repo.
+PXE_USER="${PXE_USER:-pi}"
+PXE_HOST="${PXE_HOST:-pxe.local}"
 PXE_IP="${PXE_IP:-192.168.0.254}"
 DHCP_INTERFACE="eth0"
 DHCP_RANGE_START="192.168.0.100"
 DHCP_RANGE_END="192.168.0.200"
 # PXE paths (can be overridden by .env)
-PXE_BASE="${PXE_BASE:-/home/wgr0/pxe}"
-PXE_TFTP_ROOT="${PXE_TFTP_ROOT:-/home/wgr0/pxe/tftp}"
-PXE_HTTP_ROOT="${PXE_HTTP_ROOT:-/home/wgr0/pxe/http}"
+PXE_BASE="${PXE_BASE:-/home/pi/pxe}"
+PXE_TFTP_ROOT="${PXE_TFTP_ROOT:-/home/pi/pxe/tftp}"
+PXE_HTTP_ROOT="${PXE_HTTP_ROOT:-/home/pi/pxe/http}"
 NAS_PXE_BASE="/volume1/iPXE"
 NAS_TFTP_ROOT="/volume1/iPXE/tftp"
 NAS_HTTP_ROOT="/volume1/iPXE/http"

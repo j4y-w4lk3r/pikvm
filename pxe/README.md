@@ -34,8 +34,8 @@ Edit `.env` in project root:
 ```bash
 ISO_PATH=/path/to/ubuntu-25.10-live-server-amd64.iso
 UBUNTU_PASSWORD=your-password
-NAS_HOST=100.120.185.99
-NAS_USER=lsy
+NAS_HOST=<your-nas-host>     # e.g. nas.tailnet.ts.net or 100.64.0.20
+NAS_USER=<your-nas-user>
 ```
 
 ## Setup Steps
@@ -52,8 +52,8 @@ NAS_USER=lsy
 
 3. **SSH to NAS and run setup:**
    ```bash
-   ssh lsy@100.120.185.99
-   bash /home/lsy/pxe/nas_setup.sh
+   ssh "$NAS_USER@$NAS_HOST"
+   bash ~/pxe/nas_setup.sh
    ```
    
    (Setup script configures dnsmasq/nginx to use `/home/lsy/pxe`)

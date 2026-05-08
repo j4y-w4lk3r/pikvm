@@ -172,7 +172,7 @@ Saves JPEGs from PiKVM’s HTTP snapshot API (active **switch port**, same 0-bas
 
 ```bash
 python3 automation/pikvm.py capture
-python3 automation/pikvm.py capture --port 2 --interval 1 --output-dir /Users/wgm0/px/pikvm/automation/images
+python3 automation/pikvm.py capture --port 2 --interval 1 --output-dir ~/px/pikvm/automation/images
 python3 automation/pikvm.py capture --duration 60 --no-keeper   # stream already open in browser
 ```
 
@@ -307,7 +307,7 @@ The selected item is shown in **bold pastel green text (#9bf09d)** - no boxes, n
 Configuration is stored in `.env` file:
 
 ```bash
-PIKVM_HOST=100.64.183.14     # PiKVM IP (via Tailscale)
+PIKVM_HOST=<your-pikvm-host>  # PiKVM IP or hostname (e.g. 100.64.0.10 if on Tailscale)
 PIKVM_USER=admin              # Username
 PIKVM_PASS=your_password      # Password
 ISO_PATH=/path/to/iso         # Default ISO path
@@ -397,7 +397,7 @@ The tool comes with several pre-built automation scripts:
   - **Fully automated** - just watch it type!
 
 - **Type from text.txt** - Types contents of `text.txt` file
-  - Reads from `/Users/wgm0/px/pikvm/text.txt`
+  - Reads from `~/px/pikvm/text.txt`
   - Types the entire contents via PiKVM HID
   - Perfect for passwords, commands, or any text automation
   - Edit `text.txt` to change what gets typed
@@ -427,7 +427,7 @@ The scripts use PiKVM's HID (keyboard) API to send keystrokes:
 
 The **easiest and most reliable** method:
 
-1. **Open PiKVM:** https://100.64.183.14/kvm/
+1. **Open PiKVM:** `https://<your-pikvm>/kvm/`
 2. **Login** with your credentials
 3. **Navigate:** Click menu icon (≡) → **System** → **Mass Storage Device**
 4. **Upload:** Click **"Upload"** or **"+"** button

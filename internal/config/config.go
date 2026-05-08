@@ -11,8 +11,8 @@
 //	  "schema_version": 2,
 //	  "default": "lab",
 //	  "hosts": {
-//	    "lab":    {"host":"100.64.183.14","user":"admin","pass":"..."},
-//	    "garage": {"host":"100.64.183.15","user":"admin","pass":"..."}
+//	    "lab":    {"host":"100.64.0.10","user":"admin","pass":"..."},
+//	    "garage": {"host":"100.64.0.11","user":"admin","pass":"..."}
 //	  },
 //	  "TAILSCALE_AUTH_KEY": "...",   // shared across hosts
 //	  "UBUNTU_PASSWORD":     "..."

@@ -123,15 +123,15 @@ ping 192.168.0.222
 
 ### "DHCP failed"
 - Router DHCP might be conflicting
-- Check if dnsmasq is running: `ssh root@100.120.185.99 "systemctl status dnsmasq"`
-- Check firewall: `ssh root@100.120.185.99 "iptables -L -n | grep -E '67|69'"`
+- Check if dnsmasq is running: `ssh root@$NAS_HOST "systemctl status dnsmasq"`
+- Check firewall: `ssh root@$NAS_HOST "iptables -L -n | grep -E '67|69'"`
 
 ### "TFTP connection refused"
-- Check dnsmasq TFTP: `ssh root@100.120.185.99 "netstat -tulpn | grep 69"`
-- Check file exists: `ssh root@100.120.185.99 "ls -lh /volume1/pxe/tftp/ldlinux.e64"`
+- Check dnsmasq TFTP: `ssh root@$NAS_HOST "netstat -tulpn | grep 69"`
+- Check file exists: `ssh root@$NAS_HOST "ls -lh /volume1/pxe/tftp/ldlinux.e64"`
 
 ### "File not found" in TFTP
-- Check TFTP root: `ssh root@100.120.185.99 "cat /etc/dnsmasq.d/pxe.conf | grep tftp-root"`
+- Check TFTP root: `ssh root@$NAS_HOST "cat /etc/dnsmasq.d/pxe.conf | grep tftp-root"`
 
 ## Alternative: Use iPXE
 

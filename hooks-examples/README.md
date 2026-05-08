@@ -47,7 +47,7 @@ Every hook receives at least:
 PIKVM_EVENT       e.g. "port-changed"
 PIKVM_TIMESTAMP   RFC3339 UTC
 PIKVM_HOST_NAME   "lab" / "garage" / "default"
-PIKVM_HOST        "100.64.183.14"
+PIKVM_HOST        "<pikvm-ip-or-hostname>"
 PIKVM_USER        connection username
 ```
 

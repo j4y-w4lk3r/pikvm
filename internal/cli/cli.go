@@ -282,7 +282,7 @@ func emitConfigError(jsonMode bool) {
 	fmt.Fprintln(os.Stderr, "  mkdir -p ~/.config/pikvm")
 	fmt.Fprintln(os.Stderr, "  cat > ~/.config/pikvm/config.json <<EOF")
 	fmt.Fprintln(os.Stderr, `  {`)
-	fmt.Fprintln(os.Stderr, `    "PIKVM_HOST": "100.64.183.14",`)
+	fmt.Fprintln(os.Stderr, `    "PIKVM_HOST": "<your-pikvm-ip-or-hostname>",`)
 	fmt.Fprintln(os.Stderr, `    "PIKVM_USER": "admin",`)
 	fmt.Fprintln(os.Stderr, `    "PIKVM_PASS": "your-pikvm-password"`)
 	fmt.Fprintln(os.Stderr, `  }`)
