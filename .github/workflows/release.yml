@@ -12,11 +12,11 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -24,7 +24,9 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Pin to the v2 line — `latest` works but emits a warning every
+          # run, and a future GoReleaser v3 could change behaviour.
+          version: '~> v2'
           args: release --clean
         env:
           # Default GITHUB_TOKEN (provided) can create the release in THIS

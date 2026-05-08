@@ -12,8 +12,22 @@ import (
 	"strings"
 
 	"pikvm/internal/api"
+	"pikvm/internal/config"
 	"pikvm/internal/scripts"
 	"pikvm/internal/state"
+)
+
+// Build metadata wired in by main (which itself receives them from
+// GoReleaser's -X ldflags). Tests / `go run` leave them at "dev"/"none".
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+
+	// ConfigErr is non-nil when config.Load() failed at startup. The CLI
+	// dispatcher tolerates this for help / version, but blocks on
+	// PiKVM-bound commands with a friendly explanation.
+	ConfigErr error
 )
 
 // ----------------------------------------------------------------------------
@@ -144,9 +158,25 @@ func Run() {
 		showHelp()
 		return
 	}
+
+	// These commands are always safe — no PiKVM connection required.
 	switch args[0] {
 	case "help", "--help", "-h":
 		showHelp()
+		return
+	case "version", "--version", "-v":
+		cliVersion(jsonMode)
+		return
+	}
+
+	// Everything else needs a config. Block here with a friendly hint
+	// rather than letting the first API call panic on an empty Host.
+	if ConfigErr != nil {
+		emitConfigError(jsonMode)
+		os.Exit(1)
+	}
+
+	switch args[0] {
 	case "info":
 		cliInfo(jsonMode)
 	case "switch":
@@ -168,6 +198,52 @@ func Run() {
 		showHelp()
 		os.Exit(2)
 	}
+}
+
+// cliVersion prints the build metadata. JSON mode emits a single object
+// so scripts can `pikvm --json version | jq -r .version`.
+func cliVersion(jsonMode bool) {
+	if jsonMode {
+		out, _ := json.Marshal(map[string]string{
+			"version": Version,
+			"commit":  Commit,
+			"date":    Date,
+		})
+		fmt.Println(string(out))
+		return
+	}
+	fmt.Printf("pikvm %s\n", Version)
+	fmt.Printf("  commit: %s\n", Commit)
+	fmt.Printf("  built:  %s\n", Date)
+}
+
+func emitConfigError(jsonMode bool) {
+	if jsonMode {
+		out, _ := json.Marshal(response{
+			OK:      false,
+			Command: "config",
+			Error:   fmt.Sprintf("config not found: %v", ConfigErr),
+		})
+		fmt.Println(string(out))
+		return
+	}
+	fmt.Fprintf(os.Stderr, "pikvm: %v\n\n", ConfigErr)
+	fmt.Fprintln(os.Stderr, "Searched (in order):")
+	for _, p := range config.SearchedPaths() {
+		fmt.Fprintf(os.Stderr, "  - %s\n", p)
+	}
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Create one of those (recommended: ~/.config/pikvm/config.json):")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  mkdir -p ~/.config/pikvm")
+	fmt.Fprintln(os.Stderr, "  cat > ~/.config/pikvm/config.json <<EOF")
+	fmt.Fprintln(os.Stderr, `  {`)
+	fmt.Fprintln(os.Stderr, `    "PIKVM_HOST": "100.64.183.14",`)
+	fmt.Fprintln(os.Stderr, `    "PIKVM_USER": "admin",`)
+	fmt.Fprintln(os.Stderr, `    "PIKVM_PASS": "your-pikvm-password"`)
+	fmt.Fprintln(os.Stderr, `  }`)
+	fmt.Fprintln(os.Stderr, "  EOF")
+	fmt.Fprintln(os.Stderr, "  chmod 600 ~/.config/pikvm/config.json")
 }
 
 // ----------------------------------------------------------------------------
@@ -712,6 +788,10 @@ PiKVM Control - Go + Bubble Tea Edition
 Usage:
   pikvm                              Launch interactive TUI
   pikvm [--json] <command> ...       Run a CLI command (add --json for script-friendly output)
+
+Always-safe (no PiKVM required):
+  pikvm help                         This message
+  pikvm version                      Print version, commit, and build date
 
 Inspection:
   pikvm switch                       Show switch topology + active port

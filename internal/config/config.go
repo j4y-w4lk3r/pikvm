@@ -29,35 +29,87 @@ var (
 	BaseURL          string // "https://<host>/api" — computed from Host
 	TailscaleAuthKey string
 	UbuntuPassword   string
+
+	// Loaded is true once Load() has successfully populated Host/User/Pass.
+	// CLI commands that don't need a PiKVM (help, version) check this and
+	// skip the connection-required path entirely.
+	Loaded bool
+
+	// searched records every path resolvePath() looked at, in order, so
+	// the "config not found" error can show users exactly where to drop a
+	// file. Reset on each Load() call.
+	searched []string
 )
+
+// SearchedPaths returns every config path the last Load() call attempted,
+// for use in user-facing "config not found" diagnostics.
+func SearchedPaths() []string { return append([]string{}, searched...) }
 
 // Load populates the package-level vars by reading config.json (preferred)
 // or .env (fallback). Returns an error only if neither file is usable.
+// Sets Loaded = true on success so other packages can branch on it without
+// re-checking error state.
 func Load() error {
+	searched = searched[:0]
 	if err := loadJSON(); err == nil {
 		BaseURL = "https://" + Host + "/api"
+		Loaded = true
 		return nil
 	}
 	if err := loadDotenv(); err != nil {
+		Loaded = false
 		return err
 	}
 	BaseURL = "https://" + Host + "/api"
+	Loaded = true
 	return nil
 }
 
-// resolvePath returns the first existing path matching name in the usual
-// locations: next to the binary, then current directory.
+// resolvePath returns the first existing path matching name, searching
+// (in order):
+//
+//  1. $XDG_CONFIG_HOME/pikvm/<name>     — if XDG_CONFIG_HOME is set
+//  2. ~/.config/pikvm/<name>            — XDG default, works the same on
+//     macOS + Linux despite Go's os.UserConfigDir() preferring
+//     ~/Library/Application Support on macOS (we want git/gh-style
+//     behaviour here)
+//  3. <binary-dir>/<name>                — alongside the executable
+//  4. ./<name>                           — current working directory
+//
+// Every candidate is recorded in `searched` so error messages can list
+// them all to the user.
 func resolvePath(name string) string {
+	candidates := []string{}
+
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		candidates = append(candidates, filepath.Join(xdg, "pikvm", name))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".config", "pikvm", name))
+	}
 	if execPath, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(execPath), name)
+		candidates = append(candidates, filepath.Join(filepath.Dir(execPath), name))
+	}
+	candidates = append(candidates, name)
+
+	for _, p := range candidates {
+		if !contains(searched, p) {
+			searched = append(searched, p)
+		}
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	if _, err := os.Stat(name); err == nil {
-		return name
-	}
 	return ""
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func loadJSON() error {
