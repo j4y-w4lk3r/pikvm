@@ -243,7 +243,10 @@ git add PKGBUILD .SRCINFO
 git -c user.name="$(git config --global --get user.name)" \
     -c user.email="$(git config --global --get user.email)" \
     commit -m "Initial import: pikvm-bin"
-git push origin master
+# AUR expects the branch on the server to be `master`. Locally git may have
+# committed onto `main` (depending on init.defaultBranch). Pushing
+# HEAD:master makes this work regardless of the local branch name.
+git push origin HEAD:master
 
 cat <<EOF
 

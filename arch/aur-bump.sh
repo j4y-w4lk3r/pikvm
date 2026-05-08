@@ -73,7 +73,7 @@ fi
 echo ">>> Committing + pushing"
 git add PKGBUILD .SRCINFO
 git commit -m "pikvm-bin: bump to ${VER}"
-git push origin master
+git push origin HEAD:master
 
 echo
 echo "✓ pikvm-bin bumped to v${VER} on AUR."
