@@ -131,8 +131,16 @@ Press `R`. The TUI starts capturing everything you do: every key (timestamped), 
 
 When you press stop, all of this lands in `automation/seq-script/recordings/<name>/` as a folder containing the JSON sequence, the MP4, the OCR text, and the AI summary. Replay by running it like any other script. Edit by hand if you want to tweak it.
 
-### 20. `[ ]` Hooks for events
-`~/.config/pikvm/hooks.d/` — drop in any executable. PiKVM events (`port-active-changed`, `msd-mounted`, `power-on`, `iso-upload-finished`, etc.) trigger matching hooks via `os/exec`. Use cases: Slack notifications on prod power-cycles, audit logs, terminal bell when a long upload finishes, integration with home-assistant.
+### 20. `[x]` Hooks for events
+`~/.config/pikvm/hooks.d/` — drop any executable in (named `<event>.<ext>` or `_all.<ext>` for catch-all) and the TUI fires it on the matching live event. Each hook gets `PIKVM_EVENT`, `PIKVM_TIMESTAMP`, `PIKVM_HOST_NAME`, `PIKVM_HOST`, `PIKVM_USER` plus event-specific keys via the environment. Hooks run async with a 30s timeout; stdout+stderr go to `~/.config/pikvm/hooks.log`.
+
+Events fired: `host-connected`, `host-disconnected`, `port-changed`, `power-on`, `power-off`, `msd-mounted`, `msd-unmounted`, `iso-upload-finished`, `clients-changed`.
+
+CLI surface:
+- `pikvm hooks list` / `dir` / `logs [N]`
+- `pikvm hooks test <event> [k=v...]` — synthetic dispatch for testing without state changes
+
+Starter hooks ship under `hooks-examples/`: audit log, ISO-upload notification (osascript / notify-send / terminal bell), Slack power-on poster.
 
 ---
 
@@ -184,7 +192,7 @@ Phase 2: 5, 6, 9, 10, 27         ✅ DONE
 Phase 3: 7, 8                    ✅ 7 DONE · 8 deferred
 Phase 4: 16, 17, 18              ✅ DONE (also: AUR + .deb + .rpm + .pkg.tar.zst, GoReleaser CI, Homebrew tap)
 Phase 5: 11, 25, 15              ✅ 11 DONE · 25 DONE (TUI picker deferred) · 15 next
-Phase 6: 12, 14, 20              ⏳ NEXT (hooks #20 is the easiest win)
+Phase 6: 12, 14, 20              ✅ 20 DONE · 12, 14 next
 Phase 7: 26, 19                  scheduling + vault auto-pull
 Phase 8: 13, 22, 24, 23, 21      AI + web (long horizon)
 ```
@@ -193,5 +201,6 @@ Released so far:
 - v0.0.1 — initial Homebrew + AUR distribution
 - v0.0.2 — config-free `pikvm help` / `pikvm version`, XDG config paths, GH Actions cleanup
 - v0.1.0 — ports-as-machines (#11) + multi-host federation (#25)
+- v0.2.0 — event hooks (#20) + state-only CLI commands now config-free
 
-Working order today: ship #15 (PXE provisioning) or #20 (hooks) next, then #14 (action recorder).
+Working order today: #14 (action recorder) or #15 (PXE provisioning) or #12 (Go sequence runner) next.

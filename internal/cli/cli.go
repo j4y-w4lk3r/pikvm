@@ -179,7 +179,10 @@ func Run() {
 		return
 	}
 
-	// These commands are always safe — no PiKVM connection required.
+	// These commands are always safe — they read no state from the PiKVM
+	// itself, only from local config.json / state.json files. If config
+	// is missing they degrade gracefully (e.g. `machines` shows an empty
+	// list rather than erroring on a non-existent connection).
 	switch args[0] {
 	case "help", "--help", "-h":
 		showHelp()
@@ -187,10 +190,27 @@ func Run() {
 	case "version", "--version", "-v":
 		cliVersion(jsonMode)
 		return
+	case "machines", "m":
+		cliMachines(jsonMode)
+		return
+	case "hosts", "host":
+		cliHosts(jsonMode, args[1:])
+		return
+	case "hooks", "hook":
+		// Hooks management (idea #20) is purely about local files.
+		cliHooksCmd(jsonMode, args[1:])
+		return
+	case "profile":
+		// profile list / get / unset operate on state.json only.
+		// `profile set` may resolve a numeric port through the PiKVM,
+		// but cliProfile guards that path itself.
+		cliProfile(jsonMode, args[1:])
+		return
 	}
 
-	// Everything else needs a config. Block here with a friendly hint
-	// rather than letting the first API call panic on an empty Host.
+	// Everything else needs a working PiKVM connection. Block here with
+	// a friendly hint rather than letting the first API call panic on an
+	// empty Host.
 	if ConfigErr != nil {
 		emitConfigError(jsonMode)
 		os.Exit(1)
@@ -209,18 +229,12 @@ func Run() {
 		cliReset(jsonMode, args[1:])
 	case "pick":
 		cliPick(jsonMode, args[1:])
-	case "profile":
-		cliProfile(jsonMode, args[1:])
 	case "boot":
 		cliBoot(jsonMode, args[1:])
 	case "prepare":
 		cliPrepare(jsonMode, args[1:])
 	case "ssh":
 		cliSSH(jsonMode, args[1:])
-	case "machines", "m":
-		cliMachines(jsonMode)
-	case "hosts", "host":
-		cliHosts(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:
@@ -868,6 +882,21 @@ Multi-host federation (~/.config/pikvm/config.json schema v2):
   pikvm --host <name> <command>      Run any command against a specific host
   pikvm ssh garage:vault             Cross-host SSH shorthand
                                      (= pikvm --host garage ssh vault)
+
+Event hooks (~/.config/pikvm/hooks.d/, fired by the live TUI/WS):
+  pikvm hooks                        List every hook on disk (= 'hooks list')
+  pikvm hooks dir                    Print path to the hooks directory
+  pikvm hooks logs [N]               Tail the last N (default 50) hook log entries
+  pikvm hooks test <event> [k=v...]  Fire a synthetic event synchronously to debug
+
+  Drop any executable in hooks.d/ named <event>.<ext> (or in <event>.d/<file>)
+  to subscribe. _all.sh runs on every event. Hooks receive PIKVM_EVENT,
+  PIKVM_TIMESTAMP, PIKVM_HOST_NAME, PIKVM_HOST, PIKVM_USER + event-specific
+  vars (PIKVM_PORT, PIKVM_PREV_PORT, PIKVM_NAME, ...) via the environment.
+
+  Events: host-connected, host-disconnected, port-changed, power-on,
+          power-off, msd-mounted, msd-unmounted, iso-upload-finished,
+          clients-changed.
 
 Fuzzy pickers (need 'fzf' in PATH):
   pikvm pick port                    fzf over ports → set active

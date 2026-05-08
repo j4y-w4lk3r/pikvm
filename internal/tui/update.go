@@ -41,16 +41,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	// ---- Live PiKVM events from /api/ws (idea #1) --------------------------
+	// These message handlers also fire hook events (idea #20) on every
+	// state transition. Hook dispatch is async via goroutines so it
+	// never blocks the TUI event loop, even if a hook hangs.
 	case api.ConnectedMsg:
+		wasConnected := m.wsConnected
 		m.wsConnected = true
 		m.wsLastError = ""
 		m.wsLastEvent = time.Now()
+		if !wasConnected {
+			fireHook("host-connected", nil)
+		}
 		return m, nil
 
 	case api.DisconnectedMsg:
+		wasConnected := m.wsConnected
 		m.wsConnected = false
 		if msg.Err != nil {
 			m.wsLastError = msg.Err.Error()
+		}
+		if wasConnected {
+			env := map[string]string{}
+			if msg.Err != nil {
+				env["error"] = msg.Err.Error()
+			}
+			fireHook("host-disconnected", env)
 		}
 		return m, nil
 
@@ -58,6 +73,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wsLastEvent = time.Now()
 		if msg.State.TotalPorts > 0 {
 			followActive := m.port == m.activePort || m.port >= msg.State.TotalPorts
+			prevActive := m.activePort
+			prevPower := m.powerLeds
 			m.extenders = msg.State.Extenders
 			m.portsPerExt = msg.State.PortsPerExt
 			m.totalPorts = msg.State.TotalPorts
@@ -70,6 +87,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if followActive {
 				m.port = msg.State.ActivePort
 			}
+			// Fire transition events only after the first event has
+			// seeded the model so we don't dispatch a port-changed at
+			// startup ("0 → real value" isn't a real transition).
+			if m.firstSwitchSeen {
+				firePortChanged(prevActive, m.activePort, m.portsPerExt)
+				firePowerTransitions(prevPower, m.powerLeds, m.portsPerExt)
+			}
+			m.firstSwitchSeen = true
 		}
 		return m, nil
 
@@ -82,6 +107,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case api.MsdMsg:
 		m.wsLastEvent = time.Now()
+		prev := api.MsdMsg{
+			Online: m.msdOnline, Busy: m.msdBusy, Connected: m.msdConnect,
+			FreeBytes: m.msdFree, TotalBytes: m.msdTotal,
+			Uploading: m.msdUpload, UploadName: m.msdUpName, UploadPct: m.msdUpPct,
+		}
 		m.msdOnline = msg.Online
 		m.msdBusy = msg.Busy
 		m.msdConnect = msg.Connected
@@ -90,11 +120,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.msdUpload = msg.Uploading
 		m.msdUpName = msg.UploadName
 		m.msdUpPct = msg.UploadPct
+		if m.firstMsdSeen {
+			fireMsdTransitions(prev, msg)
+		}
+		m.firstMsdSeen = true
 		return m, nil
 
 	case api.ClientsMsg:
 		m.wsLastEvent = time.Now()
+		prev := m.wsClients
 		m.wsClients = msg.Count
+		if m.firstClientsSeen {
+			fireClientsChanged(prev, msg.Count)
+		}
+		m.firstClientsSeen = true
 		return m, nil
 
 	case api.InfoMsg:

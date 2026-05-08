@@ -75,6 +75,15 @@ type Model struct {
 	msdUpload  bool
 	msdUpName  string
 	msdUpPct   float64
+
+	// Hooks event suppression on first event (idea #20). The first
+	// SwitchMsg / MsdMsg / ClientsMsg after startup populates the model
+	// from "zero" values — we don't want that to fire spurious "port
+	// changed from 0 to 5" hooks. These flags flip to true after the
+	// first message of each kind so subsequent transitions dispatch.
+	firstSwitchSeen   bool
+	firstMsdSeen      bool
+	firstClientsSeen  bool
 }
 
 // InitialModel builds the starting TUI model.
