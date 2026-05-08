@@ -351,8 +351,19 @@ func BootFromISOEntry(port int, entry api.IsoEntry) string {
 }
 
 // BootFromSpecificISO selects an already-uploaded ISO, mounts the virtual
-// drive, powers the port on, and spams F7 for 30s.
+// drive, powers the port on, and spams F7 for 30s. Equivalent to calling
+// BootFromSpecificISOWithKey with biosKey = "F7".
 func BootFromSpecificISO(port int, isoName string) string {
+	return BootFromSpecificISOWithKey(port, isoName, "F7")
+}
+
+// BootFromSpecificISOWithKey is BootFromSpecificISO with a configurable
+// BIOS key (so per-port profiles with profile.BIOSKey override the F7
+// default in roadmap idea #11's `pikvm boot` super-command).
+func BootFromSpecificISOWithKey(port int, isoName, biosKey string) string {
+	if biosKey == "" {
+		biosKey = "F7"
+	}
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("\uf121 Starting boot from: %s\n\n", isoName))
 
@@ -376,17 +387,17 @@ func BootFromSpecificISO(port int, isoName string) string {
 	time.Sleep(2 * time.Second)
 	result.WriteString("  \uf00c Ready!\n\n")
 
-	result.WriteString("  \uf0e7 Step 4: Booting to BIOS...\n")
+	result.WriteString(fmt.Sprintf("  \uf0e7 Step 4: Spamming %s to enter boot menu...\n", biosKey))
 	go func() {
 		for i := 0; i < 60; i++ {
-			_ = api.SendKey("F7")
+			_ = api.SendKey(biosKey)
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 	act := api.Action{Name: "Power ON", APICmd: "/switch/atx/power?port=%d&action=on", Method: "POST"}
 	api.ExecuteAction(act, port)
 
-	result.WriteString("  \uf00c F7 spam started! (60 presses over 30s)\n")
+	result.WriteString(fmt.Sprintf("  \uf00c %s spam started! (60 presses over 30s)\n", biosKey))
 	result.WriteString(fmt.Sprintf("  \uf00c Powered on port %s\n\n", api.FormatPort(port)))
 	result.WriteString("\uf058 Boot sequence complete!\n")
 	result.WriteString(fmt.Sprintf("\uf0a1 Select the USB drive from BIOS to boot: %s", isoName))

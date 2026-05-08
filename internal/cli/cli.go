@@ -68,10 +68,30 @@ func die(jsonMode bool, command string, err error) {
 func parseFlags(args []string) (bool, []string) {
 	jsonMode := false
 	remaining := make([]string, 0, len(args))
-	for _, a := range args {
+	skipNext := false
+	for i, a := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
 		switch a {
 		case "--json", "-j":
 			jsonMode = true
+		case "--host", "-H":
+			// Activate the named host before the rest of the args run.
+			// Errors propagate via config.UseHost's normal channels —
+			// we keep parseFlags side-effect-light by deferring the
+			// actual selection to the caller (Run) which has access to
+			// jsonMode for error formatting.
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--host needs a value (e.g. --host garage)")
+				os.Exit(2)
+			}
+			if err := config.UseHost(args[i+1]); err != nil {
+				fmt.Fprintf(os.Stderr, "pikvm: %v\n", err)
+				os.Exit(2)
+			}
+			skipNext = true
 		default:
 			remaining = append(remaining, a)
 		}
@@ -191,6 +211,16 @@ func Run() {
 		cliPick(jsonMode, args[1:])
 	case "profile":
 		cliProfile(jsonMode, args[1:])
+	case "boot":
+		cliBoot(jsonMode, args[1:])
+	case "prepare":
+		cliPrepare(jsonMode, args[1:])
+	case "ssh":
+		cliSSH(jsonMode, args[1:])
+	case "machines", "m":
+		cliMachines(jsonMode)
+	case "hosts", "host":
+		cliHosts(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:
@@ -786,8 +816,10 @@ func showHelp() {
 PiKVM Control - Go + Bubble Tea Edition
 
 Usage:
-  pikvm                              Launch interactive TUI
-  pikvm [--json] <command> ...       Run a CLI command (add --json for script-friendly output)
+  pikvm                              Launch interactive TUI against the default host
+  pikvm [--json] [--host N] <cmd>    --host activates a configured PiKVM by name
+                                     (e.g. --host garage). Default: config's "default" field
+                                     or $PIKVM_HOST_NAME.
 
 Always-safe (no PiKVM required):
   pikvm help                         This message
@@ -813,6 +845,29 @@ Per-port profiles (~/.config/pikvm/state.json):
   pikvm profile set <port> k=v ...   Set fields (name, bios_key, default_iso,
                                                  tags, tailscale_name, ssh_user, notes)
   pikvm profile unset <port>         Remove a profile entirely
+
+Machine workflows (build on profiles — port can be linear/'2.3'/profile-name):
+  pikvm machines                     Friendly columnar list of every saved machine
+  pikvm boot <port> [iso]            Switch + mount ISO + spam BIOS key + power on
+                                     (uses profile.default_iso / profile.bios_key
+                                     when args/profile fields are set)
+  pikvm prepare <port>               Switch + power-cycle + spam BIOS key (no ISO)
+  pikvm ssh <port> [extra args]      SSH into profile.tailscale_name as profile.ssh_user
+
+  Both 'boot' and 'prepare' accept --bios-key <key> as a one-off override.
+  Examples:
+    pikvm boot j4yn0                                # uses profile defaults
+    pikvm boot j4yn0 ubuntu-25.10                   # one-off ISO
+    pikvm boot j4yn0 ubuntu-25.10 --bios-key F12    # one-off BIOS key too
+    pikvm ssh vault                                 # ssh j4y@vault.tailnet.ts.net
+
+Multi-host federation (~/.config/pikvm/config.json schema v2):
+  pikvm hosts                        List every configured PiKVM (= 'hosts list')
+  pikvm hosts show [name]            Connection details for one host (omit name = active)
+  pikvm hosts use <name>             Make this host the new default (rewrites config.json)
+  pikvm --host <name> <command>      Run any command against a specific host
+  pikvm ssh garage:vault             Cross-host SSH shorthand
+                                     (= pikvm --host garage ssh vault)
 
 Fuzzy pickers (need 'fzf' in PATH):
   pikvm pick port                    fzf over ports → set active

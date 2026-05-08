@@ -85,11 +85,26 @@ With Phase 4 + 17 done, `go build -o pikvm` is the only step needed. Ship via `b
 
 ## Phase 5 — Profiles, multi-host, provisioning
 
-### 11. `[ ]` Profile system: ports as machines
-Builds on 5. CLI: `pikvm boot j4yn0 ubuntu-25.10` switches port + mounts ISO + spams BIOS key + types SSH bootstrap. `pikvm ssh vault` resolves a Tailscale name. `pikvm power on j4yn0` works without thinking in port numbers.
+### 11. `[x]` Profile system: ports as machines
+Built on 5. New CLI super-commands resolve `<port-or-name>` against state.json profiles:
+- `pikvm boot j4yn0 ubuntu-25.10` — switch port + mount ISO + spam BIOS key + power on (uses profile.default_iso / profile.bios_key when omitted)
+- `pikvm prepare j4yn0` — switch + power-cycle + spam BIOS key (no ISO)
+- `pikvm ssh vault` — exec ssh against profile.tailscale_name as profile.ssh_user
+- `pikvm machines` — friendly columnar list of every saved profile
+Both boot and prepare accept `--bios-key <key>` for one-off overrides.
 
-### 25. `[ ]` Multi-host federation
-`~/.config/pikvm/hosts.yaml` lists every PiKVM you own (lab, garage, colo). TUI starts with a host picker. CLI is namespaced: `pikvm ssh garage:2.3`. Combined with Phase 3's grid view, this is a single pane of glass for an entire homelab.
+### 25. `[x]` Multi-host federation
+config.json grew a v2 schema (back-compat with v1 single-host kept):
+```json
+{ "schema_version": 2, "default": "lab",
+  "hosts": { "lab": {...}, "garage": {...}, "colo": {...} } }
+```
+- `pikvm hosts list / show [name] / use <name>` — list every PiKVM, inspect one, set the default (rewrites config.json in place)
+- `pikvm --host garage <command>` — run any command against a specific host
+- `pikvm ssh garage:vault` — cross-host shorthand (= `--host garage ssh vault`)
+- `$PIKVM_HOST_NAME` — env override for shells / scripts
+- TUI status bar now shows `j4y@lab (100.64.183.14)` so the active host is always visible.
+- TUI host *picker* (interactive `H` to switch live) deferred — single user request away from finishing.
 
 ### 15. `[ ]` PXE + ISO + Tailscale = one-shot bare-metal provisioning
 Fuse `pxe/`, the ISO boot scripts, and `setupUbuntuServer`:
@@ -164,14 +179,19 @@ These aren't features but should be addressed continuously:
 ## Sequencing summary
 
 ```
-Phase 1: 1, 2, 3, 4              (foundations — start now)
-Phase 2: 5, 6, 9, 10, 27         (state + UI polish)
-Phase 3: 7, 8                    (grid + thumbnails)
-Phase 4: 16, 17, 18              (architecture + single binary)
-Phase 5: 11, 25, 15              (profiles + multi-host + provisioning)
-Phase 6: 12, 14, 20              (automation + recorder + hooks)
-Phase 7: 26, 19                  (scheduling + vault auto-pull)
-Phase 8: 13, 22, 24, 23, 21      (AI + web)
+Phase 1: 1, 2, 3, 4              ✅ DONE
+Phase 2: 5, 6, 9, 10, 27         ✅ DONE
+Phase 3: 7, 8                    ✅ 7 DONE · 8 deferred
+Phase 4: 16, 17, 18              ✅ DONE (also: AUR + .deb + .rpm + .pkg.tar.zst, GoReleaser CI, Homebrew tap)
+Phase 5: 11, 25, 15              ✅ 11 DONE · 25 DONE (TUI picker deferred) · 15 next
+Phase 6: 12, 14, 20              ⏳ NEXT (hooks #20 is the easiest win)
+Phase 7: 26, 19                  scheduling + vault auto-pull
+Phase 8: 13, 22, 24, 23, 21      AI + web (long horizon)
 ```
 
-Working order today: idea 1 → 2 → 3 → 4 (Phase 1).
+Released so far:
+- v0.0.1 — initial Homebrew + AUR distribution
+- v0.0.2 — config-free `pikvm help` / `pikvm version`, XDG config paths, GH Actions cleanup
+- v0.1.0 — ports-as-machines (#11) + multi-host federation (#25)
+
+Working order today: ship #15 (PXE provisioning) or #20 (hooks) next, then #14 (action recorder).

@@ -1,12 +1,31 @@
 // Package config loads PiKVM credentials + settings from disk.
 //
-// Source-of-truth is config.json (written by
-// automation/scripts/env-from-vault.sh from HashiCorp Vault). Legacy .env
-// format is accepted as a fallback so hand-written setups keep working.
+// As of schema_version 2 a single user can have multiple PiKVMs configured
+// (roadmap idea #25 — multi-host federation). Each host gets a name; one
+// is marked as the default. Picking a non-default host is a single CLI
+// flag (--host <name>), env var (PIKVM_HOST_NAME), or TUI selection.
+//
+// File format (canonical, schema v2):
+//
+//	{
+//	  "schema_version": 2,
+//	  "default": "lab",
+//	  "hosts": {
+//	    "lab":    {"host":"100.64.183.14","user":"admin","pass":"..."},
+//	    "garage": {"host":"100.64.183.15","user":"admin","pass":"..."}
+//	  },
+//	  "TAILSCALE_AUTH_KEY": "...",   // shared across hosts
+//	  "UBUNTU_PASSWORD":     "..."
+//	}
+//
+// The legacy single-host schema (v1, with PIKVM_HOST/USER/PASS at top
+// level) and the .env fallback are still accepted: Load() converts them
+// into a single-entry hosts map at runtime, so consumers always see the
+// same shape via Hosts / HostName / Host / User / Pass.
 //
 // Callers read the package-level vars (Host, User, Pass, ...) after Load()
-// returns nil. They are deliberately simple exported strings rather than a
-// struct so every consumer writes `config.Host` / `config.User` / ... in
+// returns. They are deliberately simple exported strings so the TUI / API
+// / scripts packages all write `config.Host` / `config.User` / ... in
 // place of the old package-main globals.
 package config
 
@@ -16,23 +35,48 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// Populated by Load(). Leaving them as package-level vars keeps the call
-// sites simple; the TUI / API / scripts packages all read these and none
-// of them write to them.
+// HostConfig is one PiKVM. Multiple of these live in a config.json under
+// the `hosts` map (keyed by friendly name). The active one populates the
+// package-level Host/User/Pass vars after Load().
+type HostConfig struct {
+	Host string `json:"host"`
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
 var (
-	Host             string
-	User             string
-	Pass             string
-	BaseURL          string // "https://<host>/api" — computed from Host
+	// Active host's connection details. Equivalent to Hosts[HostName].*
+	// — duplicated as plain strings to keep call sites tiny.
+	Host    string
+	User    string
+	Pass    string
+	BaseURL string // "https://<Host>/api" — recomputed on every UseHost()
+
+	// Settings shared across hosts.
 	TailscaleAuthKey string
 	UbuntuPassword   string
 
-	// Loaded is true once Load() has successfully populated Host/User/Pass.
-	// CLI commands that don't need a PiKVM (help, version) check this and
-	// skip the connection-required path entirely.
+	// HostName is the active host's friendly name (e.g. "lab"). Empty
+	// only when no config has been loaded.
+	HostName string
+
+	// Hosts is every PiKVM the user has configured. Always has at least
+	// one entry once Load() succeeds.
+	Hosts map[string]HostConfig
+
+	// DefaultHost is the host name picked when no --host flag, env var,
+	// or runtime override is in play.
+	DefaultHost string
+
+	// SchemaVersion of the loaded config. 1 = legacy single-host, 2 = v2.
+	// Useful for tooling that wants to suggest a migration.
+	SchemaVersion int
+
+	// Loaded is true once Load() has populated Host/User/Pass.
 	Loaded bool
 
 	// searched records every path resolvePath() looked at, in order, so
@@ -41,27 +85,100 @@ var (
 	searched []string
 )
 
-// SearchedPaths returns every config path the last Load() call attempted,
-// for use in user-facing "config not found" diagnostics.
+// SearchedPaths returns every config path the last Load() call attempted.
 func SearchedPaths() []string { return append([]string{}, searched...) }
 
+// HostNames returns every configured host name in stable alphabetical
+// order (the default host is *not* moved to the front; sorting matters
+// more for `pikvm hosts list`).
+func HostNames() []string {
+	names := make([]string, 0, len(Hosts))
+	for n := range Hosts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Load populates the package-level vars by reading config.json (preferred)
-// or .env (fallback). Returns an error only if neither file is usable.
-// Sets Loaded = true on success so other packages can branch on it without
-// re-checking error state.
+// or .env (fallback). Sets Loaded = true on success so other packages can
+// branch on it without re-checking error state.
+//
+// Override the active host (vs. the file's `default`) before Load returns
+// by setting $PIKVM_HOST_NAME — useful for `--host` CLI dispatch where the
+// flag is parsed earlier than Load is called.
 func Load() error {
 	searched = searched[:0]
-	if err := loadJSON(); err == nil {
-		BaseURL = "https://" + Host + "/api"
-		Loaded = true
-		return nil
+	Hosts = nil
+	HostName = ""
+	DefaultHost = ""
+	SchemaVersion = 0
+
+	if err := loadJSON(); err != nil {
+		// Fall through to .env so existing single-host setups keep
+		// working. Only error out when neither file is usable.
+		if envErr := loadDotenv(); envErr != nil {
+			Loaded = false
+			return envErr
+		}
 	}
-	if err := loadDotenv(); err != nil {
+
+	if err := UseHost(pickInitialHost()); err != nil {
 		Loaded = false
 		return err
 	}
-	BaseURL = "https://" + Host + "/api"
 	Loaded = true
+	return nil
+}
+
+// pickInitialHost returns the host name to activate at Load() time:
+//
+//  1. $PIKVM_HOST_NAME if set + valid
+//  2. The file's `default` field
+//  3. The lone host name when there's only one
+//  4. The alphabetically-first host name as a last resort
+func pickInitialHost() string {
+	if env := os.Getenv("PIKVM_HOST_NAME"); env != "" {
+		if _, ok := Hosts[env]; ok {
+			return env
+		}
+	}
+	if DefaultHost != "" {
+		if _, ok := Hosts[DefaultHost]; ok {
+			return DefaultHost
+		}
+	}
+	if len(Hosts) == 1 {
+		for n := range Hosts {
+			return n
+		}
+	}
+	if names := HostNames(); len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+// UseHost activates a configured host by name, repopulating the
+// Host/User/Pass/BaseURL vars. Returns an error when the name doesn't
+// match any configured host.
+//
+// Callers (CLI dispatcher, TUI host picker, future hot-swap) call this
+// instead of mutating the package vars directly so BaseURL stays in sync.
+func UseHost(name string) error {
+	if name == "" {
+		return fmt.Errorf("no host configured")
+	}
+	h, ok := Hosts[name]
+	if !ok {
+		return fmt.Errorf("no host named %q (configured: %s)",
+			name, strings.Join(HostNames(), ", "))
+	}
+	HostName = name
+	Host = h.Host
+	User = h.User
+	Pass = h.Pass
+	BaseURL = "https://" + h.Host + "/api"
 	return nil
 }
 
@@ -112,6 +229,9 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
+// loadJSON reads config.json supporting both v1 (legacy single-host) and
+// v2 (multi-host) schemas. v1 is auto-wrapped into a single-entry hosts
+// map named "default" so callers always see Hosts populated.
 func loadJSON() error {
 	path := resolvePath("config.json")
 	if path == "" {
@@ -121,28 +241,66 @@ func loadJSON() error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	var cfg struct {
-		SchemaVersion    int    `json:"schema_version"`
-		PIKVMHost        string `json:"PIKVM_HOST"`
-		PIKVMUser        string `json:"PIKVM_USER"`
-		PIKVMPass        string `json:"PIKVM_PASS"`
-		TailscaleAuthKey string `json:"TAILSCALE_AUTH_KEY"`
-		UbuntuPassword   string `json:"UBUNTU_PASSWORD"`
+
+	// Decode loosely so we can sniff the schema version and route.
+	var raw struct {
+		SchemaVersion    int                   `json:"schema_version"`
+		Default          string                `json:"default"`
+		Hosts            map[string]HostConfig `json:"hosts"`
+		PIKVMHost        string                `json:"PIKVM_HOST"`
+		PIKVMUser        string                `json:"PIKVM_USER"`
+		PIKVMPass        string                `json:"PIKVM_PASS"`
+		TailscaleAuthKey string                `json:"TAILSCALE_AUTH_KEY"`
+		UbuntuPassword   string                `json:"UBUNTU_PASSWORD"`
 	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	if cfg.PIKVMHost == "" || cfg.PIKVMUser == "" || cfg.PIKVMPass == "" {
-		return fmt.Errorf("%s missing required PIKVM_HOST/USER/PASS", path)
+
+	TailscaleAuthKey = raw.TailscaleAuthKey
+	UbuntuPassword = raw.UbuntuPassword
+
+	switch {
+	case len(raw.Hosts) > 0:
+		// v2 multi-host.
+		SchemaVersion = 2
+		if raw.SchemaVersion != 0 {
+			SchemaVersion = raw.SchemaVersion
+		}
+		Hosts = raw.Hosts
+		DefaultHost = raw.Default
+		// Validate every host.
+		for name, h := range Hosts {
+			if h.Host == "" || h.User == "" || h.Pass == "" {
+				return fmt.Errorf("%s: host %q missing host/user/pass", path, name)
+			}
+		}
+		// If `default` wasn't set or is bogus, fall back to the lone
+		// host (or alphabetically-first).
+		if DefaultHost == "" || Hosts[DefaultHost].Host == "" {
+			if names := HostNames(); len(names) > 0 {
+				DefaultHost = names[0]
+			}
+		}
+	case raw.PIKVMHost != "":
+		// v1 legacy: top-level PIKVM_HOST/USER/PASS. Wrap into a
+		// single-entry map under name "default".
+		SchemaVersion = 1
+		if raw.PIKVMUser == "" || raw.PIKVMPass == "" {
+			return fmt.Errorf("%s: missing PIKVM_USER or PIKVM_PASS (legacy schema)", path)
+		}
+		Hosts = map[string]HostConfig{
+			"default": {Host: raw.PIKVMHost, User: raw.PIKVMUser, Pass: raw.PIKVMPass},
+		}
+		DefaultHost = "default"
+	default:
+		return fmt.Errorf("%s: no PIKVM_HOST or hosts entry found", path)
 	}
-	Host = cfg.PIKVMHost
-	User = cfg.PIKVMUser
-	Pass = cfg.PIKVMPass
-	TailscaleAuthKey = cfg.TailscaleAuthKey
-	UbuntuPassword = cfg.UbuntuPassword
 	return nil
 }
 
+// loadDotenv keeps the very-old .env path working — single host only,
+// wrapped into the same Hosts map shape as v1 JSON for downstream code.
 func loadDotenv() error {
 	path := resolvePath(".env")
 	if path == "" {
@@ -154,6 +312,7 @@ func loadDotenv() error {
 	}
 	defer file.Close()
 
+	var h, u, p string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -168,11 +327,11 @@ func loadDotenv() error {
 		value := strings.TrimSpace(parts[1])
 		switch key {
 		case "PIKVM_HOST":
-			Host = value
+			h = value
 		case "PIKVM_USER":
-			User = value
+			u = value
 		case "PIKVM_PASS":
-			Pass = value
+			p = value
 		case "TAILSCALE_AUTH_KEY":
 			TailscaleAuthKey = value
 		case "UBUNTU_PASSWORD":
@@ -182,8 +341,13 @@ func loadDotenv() error {
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	if Host == "" || User == "" || Pass == "" {
+	if h == "" || u == "" || p == "" {
 		return fmt.Errorf("%s missing required PIKVM_HOST/USER/PASS", path)
 	}
+	SchemaVersion = 1
+	Hosts = map[string]HostConfig{
+		"default": {Host: h, User: u, Pass: p},
+	}
+	DefaultHost = "default"
 	return nil
 }

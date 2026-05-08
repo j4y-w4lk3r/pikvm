@@ -268,7 +268,14 @@ func (m Model) portStatusGlyphs(linear int) string {
 func (m Model) renderStatusBar() string {
 	var parts []string
 
-	parts = append(parts, helpStyle.Render(fmt.Sprintf("%s@%s", config.User, config.Host)))
+	// Status bar's identity chunk: prefer the friendly host name (config
+	// schema v2) over the raw IP, so users see "lab" / "garage" instead
+	// of duplicate-looking 100.64.x.x addresses.
+	identity := fmt.Sprintf("%s@%s", config.User, config.Host)
+	if config.HostName != "" && config.HostName != "default" {
+		identity = fmt.Sprintf("%s@%s (%s)", config.User, config.HostName, config.Host)
+	}
+	parts = append(parts, helpStyle.Render(identity))
 
 	if m.info.Platform != "" {
 		parts = append(parts, helpStyle.Render("PiKVM "+m.info.Platform))
