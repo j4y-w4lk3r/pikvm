@@ -2,7 +2,7 @@
 # you can always invoke the underlying commands directly. See README for
 # the full workflow.
 
-.PHONY: build test vet lint fmt install snapshot release aur-setup aur-bump brew-pat clean help
+.PHONY: build test vet lint fmt install snapshot release aur-setup aur-bump brew-pat hooks clean help
 
 BIN := pikvm
 PKG := ./cmd/pikvm
@@ -42,6 +42,12 @@ aur-bump: ## Bump pikvm-bin AUR package to VER (run after each release)
 
 brew-pat: ## Set HOMEBREW_TAP_GITHUB_TOKEN secret + (optionally) save PAT to 1Password
 	bash scripts/brew-tap-pat-setup.sh
+
+hooks: ## Enable repo-tracked git hooks (.githooks/), e.g. pre-push account guard
+	git config core.hooksPath .githooks
+	@echo "✓ git core.hooksPath set to .githooks"
+	@echo "  active hooks:"
+	@ls -1 .githooks/ | grep -v '\.md$$' | sed 's/^/    /'
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN) dist/

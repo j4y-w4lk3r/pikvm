@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Verify the active GitHub CLI account owns the push target.
+#
+# Why: this repo (j4y-w4lk3r/pikvm) and others on this machine
+# (lso0/...) have different owners. gh CLI shares a single "active
+# account" across all repos, and switching is just a `gh auth switch -u
+# <login>` away — but the switch is silent, easy to forget, and pushes
+# to the wrong owner fail with a confusing 403 only after credentials
+# are exchanged.
+#
+# This hook fails fast (before git pushes anything) with a clear "you're
+# on X, need Y" message and a one-line fix.
+#
+# Bypass: `git push --no-verify` (use sparingly — bypassing means we
+# trust the next gh auth state to magically be correct).
+#
+# Activate: `git config core.hooksPath .githooks` (or `make hooks`).
+set -euo pipefail
+
+# Skip the check when gh isn't installed — this hook is a luxury, not a
+# requirement. Same when we can't reach the GitHub API (offline push?).
+if ! command -v gh >/dev/null 2>&1; then
+    exit 0
+fi
+
+# stdin format: `<local_ref> <local_sha> <remote_ref> <remote_sha>\n` per
+# pushed ref. We don't need it; the remote URL was passed as $2.
+remote_url="${2:-}"
+
+# Extract the owner segment of the remote URL. Supports both HTTPS
+# (https://github.com/owner/repo.git) and SSH (git@github.com:owner/repo.git)
+# forms. Falls back gracefully when we can't parse — we'd rather let the
+# push through than block on a regex edge case.
+case "$remote_url" in
+    https://github.com/*|git://github.com/*)
+        # Strip protocol+host, then take the first path segment.
+        path="${remote_url#https://github.com/}"
+        path="${path#git://github.com/}"
+        expected_owner="${path%%/*}"
+        ;;
+    git@github.com:*|ssh://git@github.com/*)
+        path="${remote_url#git@github.com:}"
+        path="${path#ssh://git@github.com/}"
+        expected_owner="${path%%/*}"
+        ;;
+    *)
+        # Not a github.com URL we recognise — let git handle it.
+        exit 0
+        ;;
+esac
+
+if [ -z "$expected_owner" ]; then
+    exit 0
+fi
+
+active_login=$(gh api user --jq .login 2>/dev/null || true)
+if [ -z "$active_login" ]; then
+    # Not logged in at all — let git's HTTPS prompt or SSH auth handle it.
+    exit 0
+fi
+
+# Direct owner match wins fast.
+if [ "$active_login" = "$expected_owner" ]; then
+    exit 0
+fi
+
+# Accept membership in an org repo too (you may be pushing as a member
+# to an org you don't directly own). `gh api orgs` lists orgs you can
+# see; if the expected_owner is in that list, we trust the auth.
+if gh api user/orgs --jq '.[].login' 2>/dev/null | grep -qx "$expected_owner"; then
+    exit 0
+fi
+
+# Mismatch — yell.
+printf '\033[1;31m\u2717 git pre-push: account mismatch\033[0m\n' >&2
+printf '    remote owner : \033[1m%s\033[0m\n' "$expected_owner" >&2
+printf '    gh active    : \033[1m%s\033[0m\n' "$active_login" >&2
+printf '\n' >&2
+printf '    Fix one of:\n' >&2
+printf '      gh auth switch -u %s\n' "$expected_owner" >&2
+printf '      gid                       # if you use the gid zsh switcher\n' >&2
+printf '\n' >&2
+printf '    Bypass once: git push --no-verify\n' >&2
+exit 1
