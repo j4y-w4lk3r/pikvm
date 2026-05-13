@@ -85,7 +85,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.powerLeds = msg.State.PowerLeds
 			m.hddLeds = msg.State.HddLeds
 			if followActive {
+				// PiKVM can return -1 when no port is currently routed.
+				// activePort keeps the raw value (so the status bar can
+				// say "no active port"), but the cursor must stay in
+				// [0, totalPorts) so slice indexing never panics.
 				m.port = msg.State.ActivePort
+				if m.port < 0 {
+					m.port = 0
+				}
 			}
 			// Fire transition events only after the first event has
 			// seeded the model so we don't dispatch a port-changed at

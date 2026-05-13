@@ -87,11 +87,20 @@ type Model struct {
 }
 
 // InitialModel builds the starting TUI model.
+//
+// PiKVM's /api/switch can return summary.active_id == -1 (no port
+// currently routed). We keep that as-is in m.activePort (so the status
+// bar can show "no active port") but clamp the user-cursor m.port to 0
+// — the cursor is what the user is hovering over, and indexing slices
+// by it must never panic.
 func InitialModel() Model {
-	// Silent startup — the status bar already shows user@host + live WS.
 	sw := api.FetchSwitchState()
+	cursor := sw.ActivePort
+	if cursor < 0 {
+		cursor = 0
+	}
 	return Model{
-		port:           sw.ActivePort,
+		port:           cursor,
 		extenders:      sw.Extenders,
 		portsPerExt:    sw.PortsPerExt,
 		totalPorts:     sw.TotalPorts,
@@ -171,8 +180,14 @@ func (m *Model) launchScript(idx int) {
 // opVisualState describes how an operation should be rendered given the live
 // state of the currently-selected port (idea #9). Returns a state key
 // ("dimmed" or "normal") and an optional parenthetical suffix.
+//
+// PiKVM's /api/switch can legitimately return summary.active_id == -1
+// (e.g., transiently right after a power-on, or when no port has an
+// input yet), so m.port is allowed to be negative. portKnown must check
+// BOTH bounds before indexing m.powerLeds — otherwise the View() pass
+// panics with "index out of range [-1]" and Bubble Tea kills the program.
 func (m Model) opVisualState(name string) (vs, suffix string) {
-	portKnown := m.port < len(m.powerLeds)
+	portKnown := m.port >= 0 && m.port < len(m.powerLeds)
 	portOn := portKnown && m.powerLeds[m.port]
 
 	switch name {
