@@ -202,5 +202,125 @@ Released so far:
 - v0.0.2 — config-free `pikvm help` / `pikvm version`, XDG config paths, GH Actions cleanup
 - v0.1.0 — ports-as-machines (#11) + multi-host federation (#25)
 - v0.2.0 — event hooks (#20) + state-only CLI commands now config-free
+- v0.2.1 — crash fix when PiKVM reports `active_port == -1`, pre-push gh-account guard (`make hooks`)
 
 Working order today: #14 (action recorder) or #15 (PXE provisioning) or #12 (Go sequence runner) next.
+
+---
+
+## Lab build plan — custom router (PiKVM port) + NAS (neighbour port)
+
+**Goal:** Treat two adjacent PiKVM ports as named machines (`router`, `nas`), document a **reproducible** path from bare metal → installed OS → firewall/routing, and later wire **recording + replay** for BIOS/installer steps (roadmap #14 / #22). This section is the *project plan*; implementation lives in `pxe/`, `automation/`, Ansible/Nix, etc.
+
+### Port naming (PiKVM “extender.port”)
+
+Ports are addressed as `E.P` (extender index, port index), **not** “linear port id” unless you use a single digit.
+
+| You said | Likely PiKVM id | Profile / CLI |
+|----------|-----------------|---------------|
+| Extender 1, physical port 2 | `1.2` | `pikvm profile set 1.2 name=router …` |
+| Extender 1, physical port 3 | `1.3` | `pikvm profile set 1.3 name=nas …` |
+
+If the router is on **extender 2**, use `2.2` / `2.3` instead. Confirm with `pikvm switch` or grid view (`g`). After profiles exist, `pikvm machines` shows friendly names.
+
+**Immediate commands (once topology matches):**
+```bash
+pikvm profile set 1.2 name=router   tags=router,w680  bios_key=Delete notes='ASRock W680 router build'
+pikvm profile set 1.3 name=nas      tags=nas,storage bios_key=Delete notes='NAS'
+# Optional: default ISO / Tailscale / SSH user per profile when OS exists
+```
+
+---
+
+### A. What can (and cannot) be “programmed” for BIOS
+
+| Approach | Realistic? | Notes |
+|---------|------------|-------|
+| **Manufacturer “BIOS profile” export/import** | Rare on consumer boards; sometimes enterprise tools | Check ASRock BMC/IPMI docs for this board; often **power/serial**, not full UEFI menus |
+| **Redfish / IPMI** | Partial | Your board lists **IPMI** — use it for **power**, sensors, maybe SOL serial; usually **not** full “set every UEFI option” automation |
+| **PiKVM HID (keyboard)** | Yes | This is what `pikvm` already does: keys → machine as if a USB keyboard. **Reproducibility** = recorded key sequences + deliberate delays (roadmap #14), not magic BIOS APIs |
+| **PyAutoGUI on your Mac** | Wrong layer | PyAutoGUI drives **local** GUI pixels. The BIOS screen is on the **remote** HDMI feed. For automation you want: **PiKVM `/api/hid`** (keys) + **`/api/streamer/snapshot`** (frames) or H.264 pipeline — same ideas as #12 / #22 |
+
+**Bottom line:** expect **“record what I pressed + replay with delays”** plus optional **OCR/vision** for menus. Do not expect a single ASRock API to apply a full UEFI preset unless you find a vendor-specific tool.
+
+---
+
+### B. Recording “what was clicked / typed and when”
+
+Target architecture (aligns with Phase 6 / 8):
+
+1. **Session log (structured)** — JSON lines: `{ "t": ..., "type": "key|text|power|switch|iso", "payload": ... }` emitted from TUI/CLI (idea #14).
+2. **Optional video** — dump PiKVM stream segment to MP4 for human review.
+3. **Optional snapshots** — `GET /api/streamer/snapshot?port=N` on each step for OCR (#13) or vision model (#22).
+4. **Replay** — same HID + timing; fragile across firmware revs unless AI adapts (#24).
+
+Until #14 ships, **manual but reproducible**: document steps in this plan + keep a **checksum’d** `user-data`/install config + **post-install** script (nftables, interfaces, sysctl).
+
+---
+
+### C. OS choice: custom router
+
+| Option | Pros | Cons |
+|--------|------|------|
+| **OPNsense / pfSense** (FreeBSD-based) | Appliance UX, stable for routing/NAT/VPN; less assembly | Less “I learn every knob”; ZFS optional on NAS side is different stack |
+| **Arch Linux (or other minimal Linux)** | Full control; same ecosystem as PiKVM tooling you already use | You own **every** piece (systemd-networkd or ifupdown, nftables, dhcp, DNS, updates) |
+| **NixOS or Immutable + Ansible** | Strong **reproducibility** (declarative or idempotent) | Learning curve; router-specific modules vary |
+
+**Practical split for your skill-building:**
+- **Router VM or bare metal on `1.2`:** start with **minimal Linux + nftables** (or OPNsense if you prefer GUI-first, then peel back).
+- **NAS on `1.3`:** often **separate** decision (TrueNAS, btrfs/zfs on Linux, etc.) — don’t block router bring-up on NAS perfection.
+
+**nftables (one sentence):** the modern Linux kernel packet classification framework (tables → chains → rules). You express allow/drop/NAT/forwarding; it replaces much of what people used `iptables` for. You’ll live in `nft` syntax or **firewalld**/front-ends until comfortable.
+
+---
+
+### D. Phased execution checklist
+
+**Phase D0 — Inventory (this week)**  
+- [x] Confirm PiKVM ids: `1.2` = router, `1.3` = NAS (8-port = 2×4 extender; verified via `pikvm switch`).  
+- [x] Set `pikvm profile` entries + `pikvm machines` (saved 2026-05-16, `bios_key=Delete` on both).  
+- [x] Document BIOS entry key for W680: **Delete** (ASRock server line).  
+- [ ] IPMI/BMC URL + dedicated password; test power cycle without PiKVM (next session — needs LAN cable to dedicated BMC port + BMC IP from DHCP).
+
+**Phase D1 — Install media & net boot**  
+- [ ] Router: installer ISO on PiKVM MSD or **PXE/autoinstall** (ties to idea #15).  
+- [ ] Capture **MAC addresses** and switch ports for static DHCP / documentation.
+
+**Phase D2 — Base OS on router**  
+- [ ] Disk layout, hostname, SSH, **no root password over SSH** / keys only.  
+- [ ] Document kernel params if you need **serial console** for headless debug.
+
+**Phase D3 — Routing + firewall**  
+- [ ] Define **WAN vs LAN** interfaces (document which NIC is which physically).  
+- [ ] `nftables`: forwarding, NAT/masquerade if needed, default drop, allow established.  
+- [ ] DHCP (dnsmasq or Kea) + DNS forwarder or unbound (as needed).
+
+**Phase D4 — Reproducibility**  
+- [ ] One **idempotent** script or playbook (Ansible) or **NixOS config** that recreates D2–D3 from a fresh install.  
+- [ ] Secrets **out of git** (Vault / sops / age).
+
+**Phase D5 — BIOS/install automation (optional, after #14)**  
+- [ ] Record one golden path through UEFI + installer.  
+- [ ] Replay with conservative delays; add OCR/AI later (#22).
+
+**Phase D6 — NAS**  
+- [ ] Separate plan: ZFS/btrfs, exports, backups — after router path is stable.
+
+---
+
+### E. “AI controls the screen” — readiness
+
+We are **not** fully ready for autonomous AI loop in-tree yet (needs #21/#22: snapshot loop + model + policy). **Ready today:** you + PiKVM web UI + `pikvm` + profiles + hooks + (soon) recorder. **Next engineering steps in this repo:** prioritize **#14** (recorder) or **#12** (JSON sequences in Go) before expecting ChatGPT-in-the-loop.
+
+---
+
+### Links to existing roadmap items
+
+| Need | Roadmap |
+|------|---------|
+| One-shot network install | #15 PXE + autoinstall |
+| Record/replay HID + context | #14 Action recorder |
+| Template match / sequences in Go | #12 Sequence runner |
+| OCR boot hints | #13 |
+| Vision-guided BIOS | #22 |
+| Phone-friendly control plane | #21 |
