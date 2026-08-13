@@ -118,8 +118,7 @@ func (m Model) renderMain() string {
 	left.WriteString("\n")
 	left.WriteString(renderAppHeader() + "\n\n")
 
-	curExt := m.extenderOf(m.port)
-	curSubPort := m.portOf(m.port)
+	left.WriteString(renderAppHeader() + "\n\n")
 
 	// [H] Host row — only when multiple PiKVMs are configured.
 	if multiHostEnabled() {
@@ -148,83 +147,103 @@ func (m Model) renderMain() string {
 		left.WriteString("\n")
 	}
 
-	// [E] Extender row
-	var extRow strings.Builder
-	if m.focusMode == "extender" {
-		extRow.WriteString(selectedStyle.Render("[E] Extender:"))
+	// [E] Extender / [P] Port rows — hidden on direct-ATX hosts (no KVM switch).
+	if m.directATX {
+		left.WriteString("  " + unselectedStyle.Render("[A] ATX:     direct (no KVM switch)") + "\n")
+		powerGlyph := iconDim
+		powerStyle := helpStyle
+		powerLabel := "off"
+		if m.atxPower {
+			powerGlyph = iconPower
+			powerStyle = successStyle
+			powerLabel = "on"
+		}
+		left.WriteString(fmt.Sprintf("  Power: %s %s\n", powerStyle.Render(powerGlyph), portInfoStyle.Render(powerLabel)))
+		left.WriteString("\n")
+		left.WriteString("  " + portInfoStyle.Render("\uf0e4 Target: host (direct ATX)  ") + successStyle.Render("\uf058") + "\n")
+		left.WriteString("  " + helpStyle.Render(fmt.Sprintf("  legend: %s power", iconPower)) + "\n\n")
 	} else {
-		extRow.WriteString(unselectedStyle.Render("[E] Extender:"))
-	}
-	for i := 1; i <= m.extenders; i++ {
-		extRow.WriteString(" ")
-		label := fmt.Sprintf("[%d]", i)
-		switch {
-		case i == curExt && m.focusMode == "extender":
-			extRow.WriteString(selectedStyle.Render(label))
-		case i == curExt:
-			extRow.WriteString(successStyle.Render(label))
-		default:
-			extRow.WriteString(unselectedStyle.Render(label))
-		}
-	}
-	left.WriteString("  " + extRow.String() + "\n")
+		curExt := m.extenderOf(m.port)
+		curSubPort := m.portOf(m.port)
 
-	// [P] Port row
-	var portRow strings.Builder
-	if m.focusMode == "port" {
-		portRow.WriteString(selectedStyle.Render("[P] Port:    "))
-	} else {
-		portRow.WriteString(unselectedStyle.Render("[P] Port:    "))
-	}
-	for i := 1; i <= m.portsPerExt; i++ {
-		portRow.WriteString(" ")
-		label := fmt.Sprintf("[%d]", i)
-		var styled string
-		switch {
-		case i == curSubPort && m.focusMode == "port":
-			styled = selectedStyle.Render(label)
-		case i == curSubPort:
-			styled = successStyle.Render(label)
-		default:
-			styled = unselectedStyle.Render(label)
-		}
-		portRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(styled))
-	}
-	left.WriteString("  " + portRow.String() + "\n")
-
-	// Status row under the port boxes
-	var statusRow strings.Builder
-	statusRow.WriteString(strings.Repeat(" ", len("[P] Port:    ")))
-	for i := 1; i <= m.portsPerExt; i++ {
-		statusRow.WriteString(" ")
-		linear := m.linearPort(curExt, i)
-		statusRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(m.portStatusGlyphs(linear)))
-	}
-	left.WriteString("  " + statusRow.String() + "\n")
-
-	// Active-port summary
-	activeExt := m.activePort/m.portsPerExt + 1
-	activePortNum := m.activePort%m.portsPerExt + 1
-	syncIcon := successStyle.Render("\uf058")
-	if m.activePort != m.port {
-		activeLabel := fmt.Sprintf("%d.%d", activeExt, activePortNum)
-		if p, ok := m.state.Ports[state.PortExtID(m.activePort, m.portsPerExt)]; ok && p.Name != "" {
-			activeLabel = fmt.Sprintf("%s (%s)", activeLabel, p.Name)
-		}
-		if m.contentWidth() < 64 {
-			syncIcon = warningStyle.Render("\uf06a")
+		// [E] Extender row
+		var extRow strings.Builder
+		if m.focusMode == "extender" {
+			extRow.WriteString(selectedStyle.Render("[E] Extender:"))
 		} else {
-			syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + activeLabel + ")"
+			extRow.WriteString(unselectedStyle.Render("[E] Extender:"))
 		}
+		for i := 1; i <= m.extenders; i++ {
+			extRow.WriteString(" ")
+			label := fmt.Sprintf("[%d]", i)
+			switch {
+			case i == curExt && m.focusMode == "extender":
+				extRow.WriteString(selectedStyle.Render(label))
+			case i == curExt:
+				extRow.WriteString(successStyle.Render(label))
+			default:
+				extRow.WriteString(unselectedStyle.Render(label))
+			}
+		}
+		left.WriteString("  " + extRow.String() + "\n")
+
+		// [P] Port row
+		var portRow strings.Builder
+		if m.focusMode == "port" {
+			portRow.WriteString(selectedStyle.Render("[P] Port:    "))
+		} else {
+			portRow.WriteString(unselectedStyle.Render("[P] Port:    "))
+		}
+		for i := 1; i <= m.portsPerExt; i++ {
+			portRow.WriteString(" ")
+			label := fmt.Sprintf("[%d]", i)
+			var styled string
+			switch {
+			case i == curSubPort && m.focusMode == "port":
+				styled = selectedStyle.Render(label)
+			case i == curSubPort:
+				styled = successStyle.Render(label)
+			default:
+				styled = unselectedStyle.Render(label)
+			}
+			portRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(styled))
+		}
+		left.WriteString("  " + portRow.String() + "\n")
+
+		// Status row under the port boxes
+		var statusRow strings.Builder
+		statusRow.WriteString(strings.Repeat(" ", len("[P] Port:    ")))
+		for i := 1; i <= m.portsPerExt; i++ {
+			statusRow.WriteString(" ")
+			linear := m.linearPort(curExt, i)
+			statusRow.WriteString(lipgloss.NewStyle().Width(portCellW).Render(m.portStatusGlyphs(linear)))
+		}
+		left.WriteString("  " + statusRow.String() + "\n")
+
+		// Active-port summary
+		activeExt := m.activePort/m.portsPerExt + 1
+		activePortNum := m.activePort%m.portsPerExt + 1
+		syncIcon := successStyle.Render("\uf058")
+		if m.activePort != m.port {
+			activeLabel := fmt.Sprintf("%d.%d", activeExt, activePortNum)
+			if p, ok := m.state.Ports[state.PortExtID(m.activePort, m.portsPerExt)]; ok && p.Name != "" {
+				activeLabel = fmt.Sprintf("%s (%s)", activeLabel, p.Name)
+			}
+			if m.contentWidth() < 64 {
+				syncIcon = warningStyle.Render("\uf06a")
+			} else {
+				syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + activeLabel + ")"
+			}
+		}
+		selLabel := fmt.Sprintf("%d.%d", curExt, curSubPort)
+		if p, ok := m.state.Ports[state.PortExtID(m.port, m.portsPerExt)]; ok && p.Name != "" {
+			selLabel = fmt.Sprintf("%s (%s)", selLabel, p.Name)
+		}
+		summary := fmt.Sprintf("\uf0e4 Selected: %s  ", selLabel)
+		legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
+		left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
+		left.WriteString("  " + legend + "\n\n")
 	}
-	selLabel := fmt.Sprintf("%d.%d", curExt, curSubPort)
-	if p, ok := m.state.Ports[state.PortExtID(m.port, m.portsPerExt)]; ok && p.Name != "" {
-		selLabel = fmt.Sprintf("%s (%s)", selLabel, p.Name)
-	}
-	summary := fmt.Sprintf("\uf0e4 Selected: %s  ", selLabel)
-	legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
-	left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
-	left.WriteString("  " + legend + "\n\n")
 
 	// [O] Operations
 	if m.focusMode == "ops" {
@@ -232,7 +251,7 @@ func (m Model) renderMain() string {
 	} else {
 		left.WriteString("  " + unselectedStyle.Render("[O] Operations:") + "\n")
 	}
-	for i, act := range api.DefaultActions {
+	for i, act := range m.actions() {
 		_, suffix := m.opVisualState(act.Name)
 		line := fmt.Sprintf("  [%d] %s%s", i+1, act.Name, suffix)
 		var rendered string
@@ -316,13 +335,19 @@ func (m Model) renderScriptsBlock(wideOffset bool) string {
 func (m Model) renderHelpLines() []string {
 	w := m.contentWidth()
 	if w < 72 {
-		line1 := "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  ESC  r  q"
+		line1 := "?:Help  o:Ops  c:Scripts  ESC  r  q"
+		if !m.directATX {
+			line1 = "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  ESC  r  q"
+		}
 		if multiHostEnabled() {
 			line1 = "h:Host  " + line1
 		}
 		return []string{helpStyle.Render(line1)}
 	}
-	helpKeys := "?: Help  e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+	helpKeys := "?: Help  o: Ops  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+	if !m.directATX {
+		helpKeys = "?: Help  e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+	}
 	if multiHostEnabled() {
 		helpKeys = "h: Host  " + helpKeys
 	}
@@ -371,7 +396,11 @@ func (m Model) statusBarParts() []string {
 		parts = append(parts, helpStyle.Render("kvmd v"+m.info.KvmdVersion))
 	}
 	if m.totalPorts > 0 {
-		parts = append(parts, helpStyle.Render(fmt.Sprintf("%d ext × %d ports", m.extenders, m.portsPerExt)))
+		if m.directATX {
+			parts = append(parts, helpStyle.Render("direct ATX"))
+		} else {
+			parts = append(parts, helpStyle.Render(fmt.Sprintf("%d ext × %d ports", m.extenders, m.portsPerExt)))
+		}
 	}
 	if m.msdOnline {
 		var msd string

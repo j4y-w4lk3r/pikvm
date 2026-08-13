@@ -17,9 +17,16 @@ import (
 // Seeded to 1 so early-session calls still produce something sensible.
 // Updated atomically from both FetchSwitchState and the WS decodeSwitchEvent
 // path.
-var lastPortsPerExt atomic.Int32
+var (
+	lastPortsPerExt atomic.Int32
+	lastDirectATX   atomic.Bool
+)
 
 func init() { lastPortsPerExt.Store(1) }
+
+// IsDirectATX reports whether the most recently observed host has built-in
+// ATX only (no KVM switch). Updated by FetchSwitchState.
+func IsDirectATX() bool { return lastDirectATX.Load() }
 
 // LastPortsPerExt returns the most recent ports-per-extender value. Always
 // >= 1 so port arithmetic never divides by zero.
@@ -51,6 +58,7 @@ type PortInfo struct {
 //	linearPort = (extender-1) * portsPerExt + (port-1)   // both 1-based
 //	            = unit * portsPerExt + channel           // both 0-based
 type SwitchState struct {
+	DirectATX   bool       `json:"direct_atx"`    // true when host has no KVM switch
 	Extenders   int        `json:"extenders"`     // number of extender units (e.g. 2)
 	PortsPerExt int        `json:"ports_per_ext"` // ports per extender (typically 4)
 	TotalPorts  int        `json:"total_ports"`   // Extenders * PortsPerExt
@@ -63,6 +71,42 @@ type SwitchState struct {
 	UsbLinks   []bool `json:"usb_links"`
 	PowerLeds  []bool `json:"power_leds"`
 	HddLeds    []bool `json:"hdd_leds"`
+}
+
+// AtxState is the global ATX header state on direct-ATX PiKVM hosts.
+type AtxState struct {
+	Power bool
+	Hdd   bool
+	Busy  bool
+}
+
+// FetchAtxState queries GET /api/atx for the built-in ATX header state.
+func FetchAtxState() AtxState {
+	resp, err := Do("GET", "/atx", nil, 3*time.Second)
+	if err != nil {
+		return AtxState{}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var parsed struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Busy bool `json:"busy"`
+			Leds struct {
+				Power bool `json:"power"`
+				Hdd   bool `json:"hdd"`
+			} `json:"leds"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || !parsed.OK {
+		return AtxState{}
+	}
+	return AtxState{
+		Power: parsed.Result.Leds.Power,
+		Hdd:   parsed.Result.Leds.Hdd,
+		Busy:  parsed.Result.Busy,
+	}
 }
 
 // FetchSwitchState queries /api/switch once and returns the topology. On
@@ -118,9 +162,20 @@ func FetchSwitchState() SwitchState {
 	units := len(parsed.Result.Model.Units)
 	total := len(parsed.Result.Model.Ports)
 	if units == 0 || total == 0 {
+		atx := FetchAtxState()
+		state.DirectATX = true
+		state.Extenders = 1
+		state.PortsPerExt = 1
+		state.TotalPorts = 1
+		state.ActivePort = 0
+		state.PowerLeds = []bool{atx.Power}
+		state.HddLeds = []bool{atx.Hdd}
+		lastDirectATX.Store(true)
+		lastPortsPerExt.Store(1)
 		return state
 	}
 
+	lastDirectATX.Store(false)
 	state.Extenders = units
 	state.TotalPorts = total
 	state.PortsPerExt = total / units
@@ -143,7 +198,11 @@ func FetchSwitchState() SwitchState {
 }
 
 // SetSwitchPort points PiKVM's active port so video/HID follow the selection.
+// No-op on direct-ATX hosts (no switch to route).
 func SetSwitchPort(port int) error {
+	if IsDirectATX() {
+		return nil
+	}
 	resp, err := Do("POST", fmt.Sprintf("/switch/set_active?port=%d", port), nil, 5*time.Second)
 	if err != nil {
 		return err

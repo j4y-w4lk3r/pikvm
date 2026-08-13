@@ -64,22 +64,14 @@ func main() {
 
 func printConfigError(err error) {
 	fmt.Fprintf(os.Stderr, "pikvm: %v\n\n", err)
-	fmt.Fprintln(os.Stderr, "Searched (in order):")
-	for _, p := range config.SearchedPaths() {
-		fmt.Fprintf(os.Stderr, "  - %s\n", p)
+	if len(config.SearchedPaths()) > 0 {
+		fmt.Fprintln(os.Stderr, "Searched local paths (in order):")
+		for _, p := range config.SearchedPaths() {
+			fmt.Fprintf(os.Stderr, "  - %s\n", p)
+		}
+		fmt.Fprintln(os.Stderr, "")
 	}
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Create one of those (recommended: ~/.config/pikvm/config.json):")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  mkdir -p ~/.config/pikvm")
-	fmt.Fprintln(os.Stderr, "  cat > ~/.config/pikvm/config.json <<EOF")
-	fmt.Fprintln(os.Stderr, `  {`)
-	fmt.Fprintln(os.Stderr, `    "PIKVM_HOST": "<your-pikvm-ip-or-hostname>",`)
-	fmt.Fprintln(os.Stderr, `    "PIKVM_USER": "admin",`)
-	fmt.Fprintln(os.Stderr, `    "PIKVM_PASS": "your-pikvm-password"`)
-	fmt.Fprintln(os.Stderr, `  }`)
-	fmt.Fprintln(os.Stderr, "  EOF")
-	fmt.Fprintln(os.Stderr, "  chmod 600 ~/.config/pikvm/config.json")
+	fmt.Fprintln(os.Stderr, config.SetupHelp())
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Or run 'pikvm help' / 'pikvm --version' for commands that don't need a PiKVM.")
 }

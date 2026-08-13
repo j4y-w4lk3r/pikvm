@@ -101,6 +101,7 @@ func (m *Model) applyHostSwitch(msg hostSwitchDoneMsg) {
 	m.powerLeds = sw.PowerLeds
 	m.hddLeds = sw.HddLeds
 	m.portsDetected = true
+	m.directATX = sw.DirectATX
 
 	m.cursor = 0
 	m.focusMode = ""
@@ -115,8 +116,8 @@ func (m *Model) applyHostSwitch(msg hostSwitchDoneMsg) {
 	m.wsConnected = false
 	m.wsLastError = ""
 	m.wsClients = 0
-	m.atxPower = false
-	m.atxHdd = false
+	m.atxPower = len(sw.PowerLeds) > 0 && sw.PowerLeds[0]
+	m.atxHdd = len(sw.HddLeds) > 0 && sw.HddLeds[0]
 	m.atxBusy = false
 
 	m.msdOnline = false

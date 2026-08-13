@@ -84,6 +84,9 @@ type Model struct {
 	// Multi-host federation (roadmap #25): async switch in flight.
 	hostSwitching bool
 
+	// directATX is true for PiKVM V3-style hosts with built-in ATX only (no KVM switch).
+	directATX bool
+
 	// Hooks event suppression on first event (idea #20). The first
 	// SwitchMsg / MsdMsg / ClientsMsg after startup populates the model
 	// from "zero" values — we don't want that to fire spurious "port
@@ -119,8 +122,15 @@ func InitialModel() Model {
 		powerLeds:      sw.PowerLeds,
 		hddLeds:        sw.HddLeds,
 		portsDetected:  true,
+		directATX:      sw.DirectATX,
+		atxPower:       len(sw.PowerLeds) > 0 && sw.PowerLeds[0],
+		atxHdd:         len(sw.HddLeds) > 0 && sw.HddLeds[0],
 		state:          state.Load(),
 	}
+}
+
+func (m Model) actions() []api.Action {
+	return api.ActionsForDirect(m.directATX)
 }
 
 // Init is Bubble Tea's startup hook. We do nothing here; external pollers
@@ -197,23 +207,49 @@ func (m *Model) launchScript(idx int) {
 // BOTH bounds before indexing m.powerLeds — otherwise the View() pass
 // panics with "index out of range [-1]" and Bubble Tea kills the program.
 func (m Model) opVisualState(name string) (vs, suffix string) {
-	portKnown := m.port >= 0 && m.port < len(m.powerLeds)
-	portOn := portKnown && m.powerLeds[m.port]
+	powerOn := m.atxPower
+	if !m.directATX {
+		portKnown := m.port >= 0 && m.port < len(m.powerLeds)
+		powerOn = portKnown && m.powerLeds[m.port]
+		switch name {
+		case "Power ON":
+			if portKnown && powerOn {
+				return "dimmed", " (already on)"
+			}
+			return "normal", ""
+		case "Power OFF":
+			if portKnown && !powerOn {
+				return "dimmed", " (already off)"
+			}
+			return "normal", ""
+		case "Power Click", "Power Long Press", "Reset Click", "Reset Long Press":
+			if portKnown && !powerOn {
+				return "dimmed", " (port off)"
+			}
+			return "normal", ""
+		case "Disconnect Drive":
+			if !m.msdConnect {
+				return "dimmed", " (no drive attached)"
+			}
+			return "normal", ""
+		}
+		return "normal", ""
+	}
 
 	switch name {
 	case "Power ON":
-		if portKnown && portOn {
+		if powerOn {
 			return "dimmed", " (already on)"
 		}
 		return "normal", ""
 	case "Power OFF":
-		if portKnown && !portOn {
+		if !powerOn {
 			return "dimmed", " (already off)"
 		}
 		return "normal", ""
 	case "Power Click", "Power Long Press", "Reset Click", "Reset Long Press":
-		if portKnown && !portOn {
-			return "dimmed", " (port off)"
+		if !powerOn {
+			return "dimmed", " (host off)"
 		}
 		return "normal", ""
 	case "Disconnect Drive":

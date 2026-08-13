@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestOpVisualState exhaustively walks the (port-power-on, port-known,
 // msd-connected) decision matrix for opVisualState (idea #9).
@@ -33,6 +36,10 @@ func TestOpVisualState(t *testing.T) {
 		{"Disconnect_detached", "Disconnect Drive", 0, []bool{false}, false, "dimmed", " (no drive attached)"},
 
 		{"UnknownOp", "Make Coffee", 0, []bool{true}, true, "normal", ""},
+
+		{"DirectATX_PowerON_on", "Power ON", 0, nil, false, "dimmed", " (already on)"},
+		{"DirectATX_PowerOFF_off", "Power OFF", 0, nil, false, "dimmed", " (already off)"},
+		{"DirectATX_Click_off", "Power Click", 0, nil, false, "dimmed", " (host off)"},
 	}
 
 	for _, c := range cases {
@@ -41,6 +48,15 @@ func TestOpVisualState(t *testing.T) {
 				port:       c.port,
 				powerLeds:  c.powerLeds,
 				msdConnect: c.msdConnect,
+			}
+			if strings.HasPrefix(c.name, "DirectATX_") {
+				m.directATX = true
+				switch c.name {
+				case "DirectATX_PowerON_on":
+					m.atxPower = true
+				case "DirectATX_PowerOFF_off", "DirectATX_Click_off":
+					m.atxPower = false
+				}
 			}
 			gotState, gotSuffix := m.opVisualState(c.op)
 			if gotState != c.wantState || gotSuffix != c.wantSuffix {

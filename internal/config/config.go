@@ -135,14 +135,25 @@ func Load() error {
 	// Snapshot shared keys + cached hosts before bootstrap overwrites.
 	loadExistingHostsSnapshot()
 
-	if err := tryBootstrapFromOnePassword(); err != nil {
-		if err2 := loadJSON(); err2 != nil {
-			if envErr := loadDotenv(); envErr != nil {
-				Loaded = false
-				return envErr
+	bootstrapErr := tryBootstrapFromOnePassword()
+	if len(Hosts) == 0 {
+		var jsonErr, envErr error
+		if jsonErr = loadJSON(); jsonErr != nil {
+			envErr = loadDotenv()
+		}
+		if len(Hosts) == 0 {
+			Loaded = false
+			localErr := envErr
+			if localErr == nil {
+				localErr = jsonErr
 			}
+			if localErr == nil {
+				localErr = fmt.Errorf("no hosts in config.json or .env")
+			}
+			return newLoadError(bootstrapErr, localErr)
 		}
 	}
+	_ = bootstrapErr // logged in LastDiscoverSummary when non-nil
 
 	normalizeHosts()
 

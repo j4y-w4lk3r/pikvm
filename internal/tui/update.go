@@ -111,6 +111,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.atxBusy = msg.Busy
 		m.atxPower = msg.PowerLed
 		m.atxHdd = msg.HddLed
+		if m.directATX {
+			m.powerLeds = []bool{msg.PowerLed}
+			m.hddLeds = []bool{msg.HddLed}
+		}
 		return m, nil
 
 	case api.MsdMsg:
@@ -232,11 +236,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "e":
-		if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
+		if !m.directATX && !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 			m.focusMode = "extender"
 		}
 	case "p":
-		if !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
+		if !m.directATX && !m.selectingISO && !m.selectingBIOSKey && !m.gridView {
 			m.focusMode = "port"
 		}
 	case "o":
@@ -268,7 +272,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "g":
-		if !m.selectingISO && !m.selectingBIOSKey {
+		if !m.directATX && !m.selectingISO && !m.selectingBIOSKey {
 			m.gridView = !m.gridView
 			if m.gridView {
 				m.gridCursor = m.port
@@ -295,7 +299,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		} else if m.focusMode == "" && m.inScripts {
 			m.inScripts = false
-			m.cursor = len(api.DefaultActions) - 1
+			m.cursor = len(m.actions()) - 1
 		}
 
 	case "right", "l":
@@ -317,13 +321,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.isoCursor < len(m.availableISOEntries)-1 {
 				m.isoCursor++
 			}
-		} else if m.focusMode == "ops" && m.cursor < len(api.DefaultActions)-1 {
+		} else if m.focusMode == "ops" && m.cursor < len(m.actions())-1 {
 			m.cursor++
 		} else if m.focusMode == "scripts" && m.cursor < len(scripts.Default)-1 {
 			m.cursor++
-		} else if m.focusMode == "" && m.cursor < len(api.DefaultActions)-1 {
+		} else if m.focusMode == "" && m.cursor < len(m.actions())-1 {
 			m.cursor++
-		} else if m.focusMode == "" && m.cursor == len(api.DefaultActions)-1 {
+		} else if m.focusMode == "" && m.cursor == len(m.actions())-1 {
 			m.inScripts = true
 			m.cursor = 0
 		} else if m.focusMode == "" && m.inScripts && m.cursor < len(scripts.Default)-1 {
@@ -377,13 +381,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.result = scripts.BootFromSpecificISO(m.port, entry.Name)
 			}
 		} else if m.focusMode == "ops" {
-			m.result = api.ExecuteAction(api.DefaultActions[m.cursor], m.port)
+			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
 		} else if m.focusMode == "scripts" {
 			m.launchScript(m.cursor)
 		} else if m.focusMode == "" && m.inScripts {
 			m.launchScript(m.cursor)
 		} else if m.focusMode == "" && !m.inScripts {
-			m.result = api.ExecuteAction(api.DefaultActions[m.cursor], m.port)
+			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
 		}
 	}
 	return m, nil
