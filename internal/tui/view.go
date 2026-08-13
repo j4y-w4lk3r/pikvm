@@ -15,19 +15,22 @@ import (
 // View is Bubble Tea's render function. Branches on the various modal
 // states; the main two-column layout is the default.
 func (m Model) View() string {
-	if m.quitting {
-		return successStyle.Render("\n\uf00c Goodbye!\n\n")
+	var content string
+	switch {
+	case m.quitting:
+		content = successStyle.Render("\n\uf00c Goodbye!\n\n")
+	case m.showHelp:
+		content = m.renderHelpView()
+	case m.gridView:
+		content = m.renderGridView()
+	case m.selectingBIOSKey:
+		content = m.renderBIOSPicker()
+	case m.selectingISO:
+		content = m.renderISOPicker()
+	default:
+		content = m.renderMain()
 	}
-	if m.gridView {
-		return m.renderGridView()
-	}
-	if m.selectingBIOSKey {
-		return m.renderBIOSPicker()
-	}
-	if m.selectingISO {
-		return m.renderISOPicker()
-	}
-	return m.renderMain()
+	return m.wrapAppFrame(content)
 }
 
 // renderBIOSPicker (idea #6) — two-column key chooser with per-port saved default.
@@ -52,23 +55,34 @@ func (m Model) renderBIOSPicker() string {
 	}
 	s.WriteString("\n")
 
-	half := (len(scripts.BIOSKeyOptions) + 1) / 2
-	for row := 0; row < half; row++ {
-		line := "  "
-		for col := 0; col < 2; col++ {
-			idx := col*half + row
-			if idx >= len(scripts.BIOSKeyOptions) {
-				continue
-			}
-			opt := scripts.BIOSKeyOptions[idx]
+	if m.contentWidth() < 72 {
+		for idx, opt := range scripts.BIOSKeyOptions {
 			marker := " "
 			if opt.Key == savedKey {
 				marker = "★"
 			}
 			cell := fmt.Sprintf(" %s [%d] %-4s  %s", marker, idx+1, opt.Label, scripts.BIOSKeyHint(opt.Label))
-			line += lipgloss.NewStyle().Width(36).Render(unselectedStyle.Render(cell))
+			s.WriteString("  " + unselectedStyle.Render(cell) + "\n")
 		}
-		s.WriteString(line + "\n")
+	} else {
+		half := (len(scripts.BIOSKeyOptions) + 1) / 2
+		for row := 0; row < half; row++ {
+			line := "  "
+			for col := 0; col < 2; col++ {
+				idx := col*half + row
+				if idx >= len(scripts.BIOSKeyOptions) {
+					continue
+				}
+				opt := scripts.BIOSKeyOptions[idx]
+				marker := " "
+				if opt.Key == savedKey {
+					marker = "★"
+				}
+				cell := fmt.Sprintf(" %s [%d] %-4s  %s", marker, idx+1, opt.Label, scripts.BIOSKeyHint(opt.Label))
+				line += lipgloss.NewStyle().Width(36).Render(unselectedStyle.Render(cell))
+			}
+			s.WriteString(line + "\n")
+		}
 	}
 	s.WriteString("\n")
 	s.WriteString("  " + helpStyle.Render(fmt.Sprintf("1-%d: pick (saves to profile)   ESC: cancel", len(scripts.BIOSKeyOptions))) + "\n\n")
@@ -96,17 +110,43 @@ func (m Model) renderISOPicker() string {
 	return s.String()
 }
 
-// renderMain is the standard two-column TUI (left: ports+ops; right: scripts).
+// renderMain adapts between two-column (wide) and stacked (narrow) layouts.
 func (m Model) renderMain() string {
-	const leftWidth = 52
-	const portCellW = 7
+	portCellW := m.portCellWidth()
 
 	var left strings.Builder
 	left.WriteString("\n")
-	left.WriteString(headerStyle.Render(" \uf0e7 PiKVM ATX Power Control ") + "\n\n")
+	left.WriteString(renderAppHeader() + "\n\n")
 
 	curExt := m.extenderOf(m.port)
 	curSubPort := m.portOf(m.port)
+
+	// [H] Host row — only when multiple PiKVMs are configured.
+	if multiHostEnabled() {
+		var hostRow strings.Builder
+		if m.focusMode == "host" {
+			hostRow.WriteString(selectedStyle.Render("[H] Host:    "))
+		} else {
+			hostRow.WriteString(unselectedStyle.Render("[H] Host:    "))
+		}
+		for i, name := range config.HostNames() {
+			hostRow.WriteString(" ")
+			label := fmt.Sprintf("[%d] %s", i+1, name)
+			switch {
+			case name == config.HostName && m.focusMode == "host":
+				hostRow.WriteString(selectedStyle.Render(label))
+			case name == config.HostName:
+				hostRow.WriteString(successStyle.Render(label))
+			default:
+				hostRow.WriteString(unselectedStyle.Render(label))
+			}
+		}
+		left.WriteString("  " + hostRow.String() + "\n")
+		if m.hostSwitching {
+			left.WriteString("  " + helpStyle.Render("\uf021 Switching PiKVM…") + "\n")
+		}
+		left.WriteString("\n")
+	}
 
 	// [E] Extender row
 	var extRow strings.Builder
@@ -171,7 +211,11 @@ func (m Model) renderMain() string {
 		if p, ok := m.state.Ports[state.PortExtID(m.activePort, m.portsPerExt)]; ok && p.Name != "" {
 			activeLabel = fmt.Sprintf("%s (%s)", activeLabel, p.Name)
 		}
-		syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + activeLabel + ")"
+		if m.contentWidth() < 64 {
+			syncIcon = warningStyle.Render("\uf06a")
+		} else {
+			syncIcon = warningStyle.Render("\uf06a") + " (PiKVM is on " + activeLabel + ")"
+		}
 	}
 	selLabel := fmt.Sprintf("%d.%d", curExt, curSubPort)
 	if p, ok := m.state.Ports[state.PortExtID(m.port, m.portsPerExt)]; ok && p.Name != "" {
@@ -180,7 +224,7 @@ func (m Model) renderMain() string {
 	summary := fmt.Sprintf("\uf0e4 Selected: %s  ", selLabel)
 	legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
 	left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
-	left.WriteString(legend + "\n\n")
+	left.WriteString("  " + legend + "\n\n")
 
 	// [O] Operations
 	if m.focusMode == "ops" {
@@ -199,34 +243,31 @@ func (m Model) renderMain() string {
 		}
 		left.WriteString("  " + rendered + "\n")
 	}
-	leftCol := lipgloss.NewStyle().Width(leftWidth).Render(left.String())
 
-	// Right column: [C] Custom Scripts
-	var right strings.Builder
-	right.WriteString("\n\n\n")
-	if m.focusMode == "scripts" {
-		right.WriteString("  " + selectedStyle.Render("[C] Custom Scripts (j/k, 1-9, Enter):") + "\n\n")
+	scriptsBlock := m.renderScriptsBlock(m.useTwoColumns())
+
+	var mainBody string
+	if m.useTwoColumns() {
+		leftCol := lipgloss.NewStyle().Width(m.contentWidth() * 55 / 100).Render(left.String())
+		rightCol := lipgloss.NewStyle().Width(m.contentWidth()*45/100 - 3).Render(scriptsBlock)
+		mainBody = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "   ", rightCol)
 	} else {
-		right.WriteString("  " + unselectedStyle.Render("[C] Custom Scripts:") + "\n\n")
+		mainBody = lipgloss.JoinVertical(lipgloss.Left,
+			left.String(),
+			"",
+			scriptsBlock,
+		)
 	}
-	for i, s := range scripts.Default {
-		line := fmt.Sprintf("  [%d] %s", i+1, s.Name)
-		highlighted := (m.focusMode == "scripts" && m.cursor == i) ||
-			(m.focusMode == "" && m.inScripts && m.cursor == i)
-		if highlighted {
-			right.WriteString("  " + selectedStyle.Render(line) + "\n")
-		} else {
-			right.WriteString("  " + unselectedStyle.Render(line) + "\n")
-		}
-	}
-	rightCol := lipgloss.NewStyle().Width(48).Render(right.String())
-
-	mainRow := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "   ", rightCol)
 
 	// Help + result footer + status bar
 	var bottom strings.Builder
-	bottom.WriteString("\n  " + m.renderStatusBar() + "\n")
-	bottom.WriteString("\n  " + helpStyle.Render("e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit") + "\n")
+	for _, line := range m.renderStatusBarLines() {
+		bottom.WriteString("\n  " + line)
+	}
+	bottom.WriteString("\n")
+	for _, line := range m.renderHelpLines() {
+		bottom.WriteString("\n  " + line)
+	}
 	if m.result != "" {
 		bottom.WriteString("\n  ")
 		switch {
@@ -243,7 +284,49 @@ func (m Model) renderMain() string {
 	}
 	bottom.WriteString("\n")
 
-	return mainRow + bottom.String()
+	return mainBody + bottom.String()
+}
+
+// renderScriptsBlock is the [C] Custom Scripts column/section.
+func (m Model) renderScriptsBlock(wideOffset bool) string {
+	var right strings.Builder
+	if wideOffset {
+		right.WriteString("\n\n\n")
+	} else {
+		right.WriteString("\n")
+	}
+	if m.focusMode == "scripts" {
+		right.WriteString("  " + selectedStyle.Render("[C] Custom Scripts (j/k, 1-9, Enter):") + "\n\n")
+	} else {
+		right.WriteString("  " + unselectedStyle.Render("[C] Custom Scripts:") + "\n\n")
+	}
+	for i, s := range scripts.Default {
+		line := fmt.Sprintf("  [%d] %s", i+1, s.Name)
+		highlighted := (m.focusMode == "scripts" && m.cursor == i) ||
+			(m.focusMode == "" && m.inScripts && m.cursor == i)
+		if highlighted {
+			right.WriteString("  " + selectedStyle.Render(line) + "\n")
+		} else {
+			right.WriteString("  " + unselectedStyle.Render(line) + "\n")
+		}
+	}
+	return right.String()
+}
+
+func (m Model) renderHelpLines() []string {
+	w := m.contentWidth()
+	if w < 72 {
+		line1 := "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  ESC  r  q"
+		if multiHostEnabled() {
+			line1 = "h:Host  " + line1
+		}
+		return []string{helpStyle.Render(line1)}
+	}
+	helpKeys := "?: Help  e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+	if multiHostEnabled() {
+		helpKeys = "h: Host  " + helpKeys
+	}
+	return packStyledLines([]string{helpStyle.Render(helpKeys)}, w, " ")
 }
 
 // portStatusGlyphs returns a 3-glyph status string for one linear port
@@ -264,16 +347,20 @@ func (m Model) portStatusGlyphs(linear int) string {
 		style(on(m.powerLeds), iconPower)
 }
 
-// renderStatusBar (idea #10) — always-visible single-line health summary.
-func (m Model) renderStatusBar() string {
+// renderStatusBarLines returns one or more status-bar rows that fit the pane.
+func (m Model) renderStatusBarLines() []string {
+	return packStyledLines(m.statusBarParts(), m.contentWidth(), helpStyle.Render("  │  "))
+}
+
+func (m Model) statusBarParts() []string {
 	var parts []string
 
 	// Status bar's identity chunk: prefer the friendly host name (config
 	// schema v2) over the raw IP, so users see "lab" / "garage" instead
 	// of duplicate-looking 100.64.x.x addresses.
-	identity := fmt.Sprintf("%s@%s", config.User, config.Host)
-	if config.HostName != "" && config.HostName != "default" {
-		identity = fmt.Sprintf("%s@%s (%s)", config.User, config.HostName, config.Host)
+	identity := fmt.Sprintf("%s@%s (%s)", config.User, config.Host, config.HostName)
+	if config.HostName == "" {
+		identity = fmt.Sprintf("%s@%s", config.User, config.Host)
 	}
 	parts = append(parts, helpStyle.Render(identity))
 
@@ -334,7 +421,13 @@ func (m Model) renderStatusBar() string {
 	}
 	parts = append(parts, fmt.Sprintf("%s %s", dot, helpStyle.Render(label)))
 
-	return strings.Join(parts, helpStyle.Render("  │  "))
+	return parts
+}
+
+// renderStatusBar keeps a single-line join for callers that expect it.
+func (m Model) renderStatusBar() string {
+	lines := m.renderStatusBarLines()
+	return strings.Join(lines, "\n  ")
 }
 
 // humanBytes formats a byte count in a friendly short form.

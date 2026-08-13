@@ -40,6 +40,7 @@ type Model struct {
 	availableISOEntries []api.IsoEntry
 	isoCursor           int
 	selectingBIOSKey    bool
+	showHelp            bool
 
 	// Grid-view (idea #7)
 	gridView   bool
@@ -75,6 +76,13 @@ type Model struct {
 	msdUpload  bool
 	msdUpName  string
 	msdUpPct   float64
+
+	// Terminal size — drives responsive layout (tmux splits, small panes).
+	termWidth  int
+	termHeight int
+
+	// Multi-host federation (roadmap #25): async switch in flight.
+	hostSwitching bool
 
 	// Hooks event suppression on first event (idea #20). The first
 	// SwitchMsg / MsdMsg / ClientsMsg after startup populates the model
@@ -117,7 +125,9 @@ func InitialModel() Model {
 
 // Init is Bubble Tea's startup hook. We do nothing here; external pollers
 // (WebSocket, info) are started in main() and send events via prog.Send.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	return tea.WindowSize()
+}
 
 // ---- helpers on Model ------------------------------------------------------
 

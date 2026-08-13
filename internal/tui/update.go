@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pikvm/internal/api"
+	"pikvm/internal/config"
 	"pikvm/internal/scripts"
 	"pikvm/internal/state"
 )
@@ -156,6 +157,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.result = scripts.BootFromSpecificISO(msg.port, msg.name)
 		return m, nil
 
+	case hostSwitchDoneMsg:
+		if msg.err != nil {
+			m.hostSwitching = false
+			m.focusMode = ""
+			if msg.prevName != "" {
+				_ = config.UseHost(msg.prevName)
+				api.RequestWSReconnect()
+			}
+			m.result = fmt.Sprintf("\uf057 Host switch failed: %v", msg.err)
+			return m, nil
+		}
+		if msg.name == msg.prevName {
+			m.hostSwitching = false
+			m.focusMode = ""
+			m.result = fmt.Sprintf("\uf00c Already on %s", hostDisplayLabel())
+			return m, nil
+		}
+		m.applyHostSwitch(msg)
+		m.result = fmt.Sprintf("\uf00c Switched to %s (%s)", hostDisplayLabel(), config.Host)
+		return m, nil
+
+	case tea.WindowSizeMsg:
+		m.termWidth = msg.Width
+		m.termHeight = msg.Height
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -166,10 +193,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey is the large key-dispatch switch extracted out of Update() for
 // readability. Returns the new model + (usually nil) command.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+
+	if m.showHelp {
+		switch key {
+		case "esc", "?":
+			m.showHelp = false
+		}
+		return m, nil
+	}
+
+	switch key {
 	case "ctrl+c", "q":
 		m.quitting = true
 		return m, tea.Quit
+
+	case "?":
+		m.showHelp = true
+		m.focusMode = ""
+		return m, nil
 
 	case "esc":
 		switch {
@@ -207,6 +249,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusMode = "scripts"
 			m.cursor = 0
 		}
+	case "h", "H":
+		if m.gridView {
+			subPort := m.gridCursor % m.portsPerExt
+			if subPort > 0 {
+				m.gridCursor--
+			}
+		} else if multiHostEnabled() && !m.selectingISO && !m.selectingBIOSKey && !m.hostSwitching {
+			m.focusMode = "host"
+		}
+
+	case "left":
+		if m.gridView {
+			subPort := m.gridCursor % m.portsPerExt
+			if subPort > 0 {
+				m.gridCursor--
+			}
+		}
 
 	case "g":
 		if !m.selectingISO && !m.selectingBIOSKey {
@@ -237,14 +296,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.focusMode == "" && m.inScripts {
 			m.inScripts = false
 			m.cursor = len(api.DefaultActions) - 1
-		}
-
-	case "left", "h":
-		if m.gridView {
-			subPort := m.gridCursor % m.portsPerExt
-			if subPort > 0 {
-				m.gridCursor--
-			}
 		}
 
 	case "right", "l":
@@ -365,6 +416,19 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.result = scripts.BootToBIOSWithKey(m.port, opt)
 		return m, nil
+	}
+	if m.focusMode == "host" {
+		digit := int(msg.String()[0] - '0')
+		names := config.HostNames()
+		if digit < 1 || digit > len(names) {
+			m.result = fmt.Sprintf("\uf071 Pick host 1-%d (or ESC)", len(names))
+			return m, nil
+		}
+		name := names[digit-1]
+		m.hostSwitching = true
+		m.focusMode = ""
+		m.result = fmt.Sprintf("\uf021 Switching to %s…", name)
+		return m, switchHostCmd(name)
 	}
 	if m.focusMode == "extender" {
 		digit := int(msg.String()[0] - '0')

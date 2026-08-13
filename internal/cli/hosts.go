@@ -3,21 +3,15 @@
 // Subcommands:
 //
 //	pikvm hosts                    pikvm hosts list (alias)
-//	pikvm hosts list               every configured host + which is default + which is active
-//	pikvm hosts show [name]        connection details for one host (or active host if omitted)
-//	pikvm hosts use <name>         set this host as the new default (rewrites config.json)
-//
-// Read paths only require config.json present; mutating paths (`use`)
-// rewrite the file in place preserving formatting and other top-level
-// fields. Adding/removing hosts isn't wired here yet — edit config.json
-// by hand for now (or run `make config-edit` if you wire that target).
+//	pikvm hosts list               every configured host (pikvm1, pikvm2, …)
+//	pikvm hosts show [name]        connection details for one host (or active if omitted)
+//	pikvm hosts sync               refresh host IPs from tailscale / headscale now
 package cli
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"pikvm/internal/config"
@@ -37,37 +31,39 @@ func cliHosts(jsonMode bool, args []string) {
 			name = args[1]
 		}
 		cliHostsShow(jsonMode, name)
-	case "use":
-		if len(args) < 2 {
-			die(jsonMode, "hosts use", fmt.Errorf("usage: pikvm hosts use <name>"))
+	case "sync":
+		cliHostsSync(jsonMode)
+	case "log", "logs":
+		n := 20
+		if len(args) >= 2 {
+			fmt.Sscanf(args[1], "%d", &n)
 		}
-		cliHostsUse(jsonMode, args[1])
+		cliHostsLog(jsonMode, n)
+	case "use":
+		die(jsonMode, "hosts use", fmt.Errorf(
+			"'hosts use' was removed — launch starts on pikvm1; switch with pikvm --host <name> or h+number in the TUI"))
 	default:
-		die(jsonMode, "hosts", fmt.Errorf("unknown subcommand %q (try: list / show / use)", sub))
+		die(jsonMode, "hosts", fmt.Errorf("unknown subcommand %q (try: list / show / sync)", sub))
 	}
 }
 
-// cliHostsList prints every configured host in a table marking the
-// default and the currently-active one. Active is usually == default but
-// can differ when --host or PIKVM_HOST_NAME is in play.
 func cliHostsList(jsonMode bool) {
 	if jsonMode {
 		rows := []map[string]interface{}{}
 		for _, name := range config.HostNames() {
 			h := config.Hosts[name]
 			rows = append(rows, map[string]interface{}{
-				"name":    name,
-				"host":    h.Host,
-				"user":    h.User,
-				"default": name == config.DefaultHost,
-				"active":  name == config.HostName,
+				"name":           name,
+				"host":           h.Host,
+				"user":           h.User,
+				"tailscale_name": h.TailscaleName,
+				"active":         name == config.HostName,
 			})
 		}
 		out, _ := json.Marshal(response{
 			OK: true, Command: "hosts list",
 			Result: map[string]interface{}{
 				"hosts":          rows,
-				"default":        config.DefaultHost,
 				"active":         config.HostName,
 				"schema_version": config.SchemaVersion,
 			},
@@ -79,22 +75,23 @@ func cliHostsList(jsonMode bool) {
 		fmt.Println("(no hosts configured)")
 		return
 	}
-	fmt.Printf("%-12s %-22s %-12s %s\n", "NAME", "HOST", "USER", "FLAGS")
+	fmt.Printf("%-12s %-22s %-12s %-16s %s\n", "NAME", "HOST", "USER", "TAILSCALE", "FLAGS")
 	for _, name := range config.HostNames() {
 		h := config.Hosts[name]
 		flags := []string{}
 		if name == config.HostName {
 			flags = append(flags, "active")
 		}
-		if name == config.DefaultHost {
-			flags = append(flags, "default")
+		ts := h.TailscaleName
+		if ts == "" {
+			ts = "-"
 		}
-		fmt.Printf("%-12s %-22s %-12s %s\n", name, h.Host, h.User, strings.Join(flags, ","))
+		fmt.Printf("%-12s %-22s %-12s %-16s %s\n", name, h.Host, h.User, ts, strings.Join(flags, ","))
 	}
 	if config.SchemaVersion == 1 {
 		fmt.Println()
-		fmt.Println("(schema v1 — single-host legacy. To add more hosts, migrate config.json to v2:")
-		fmt.Println(" {\"schema_version\":2,\"default\":\"...\",\"hosts\":{\"name\":{\"host\":\"...\",\"user\":\"...\",\"pass\":\"...\"}}})")
+		fmt.Println("(legacy single-host — add pikvm2 in config.json to use multiple PiKVMs:")
+		fmt.Println(` {"schema_version":2,"hosts":{"pikvm1":{...},"pikvm2":{...}}})`)
 	}
 }
 
@@ -111,13 +108,11 @@ func cliHostsShow(jsonMode bool, name string) {
 		out, _ := json.Marshal(response{
 			OK: true, Command: "hosts show",
 			Result: map[string]interface{}{
-				"name":    name,
-				"host":    h.Host,
-				"user":    h.User,
-				"default": name == config.DefaultHost,
-				"active":  name == config.HostName,
-				// pass deliberately omitted — JSON consumers should never
-				// log secrets accidentally.
+				"name":           name,
+				"host":           h.Host,
+				"user":           h.User,
+				"tailscale_name": h.TailscaleName,
+				"active":         name == config.HostName,
 			},
 		})
 		fmt.Println(string(out))
@@ -125,93 +120,59 @@ func cliHostsShow(jsonMode bool, name string) {
 	}
 	fmt.Printf("name:    %s\n", name)
 	fmt.Printf("host:    %s\n", h.Host)
+	if h.TailscaleName != "" {
+		fmt.Printf("tailscale_name: %s\n", h.TailscaleName)
+	}
 	fmt.Printf("user:    %s\n", h.User)
-	fmt.Printf("default: %v\n", name == config.DefaultHost)
 	fmt.Printf("active:  %v\n", name == config.HostName)
 }
 
-// cliHostsUse rewrites config.json's `default` field to point at the
-// chosen host. Only works on schema v2 — v1 has no concept of multiple
-// hosts to default between.
-func cliHostsUse(jsonMode bool, name string) {
-	if _, ok := config.Hosts[name]; !ok {
-		die(jsonMode, "hosts use", fmt.Errorf("no host named %q (configured: %s)",
-			name, strings.Join(config.HostNames(), ", ")))
+func cliHostsSync(jsonMode bool) {
+	active := config.HostName
+	if err := config.RefreshFromOnePassword(); err != nil {
+		die(jsonMode, "hosts sync", err)
 	}
-	if config.SchemaVersion < 2 {
-		die(jsonMode, "hosts use", fmt.Errorf(
-			"schema v1 single-host config has nothing to switch — migrate to v2 to use multiple hosts"))
+	if active != "" {
+		if err := config.UseHost(active); err != nil {
+			die(jsonMode, "hosts sync", err)
+		}
 	}
+	result := map[string]interface{}{
+		"hosts":   len(config.Hosts),
+		"entries": config.LastDiscoverSummary.Entries,
+		"active":  config.HostName,
+		"log":     config.DiscoverLogPath(),
+	}
+	emit(jsonMode, "hosts sync", result, nil)
+	if jsonMode {
+		return
+	}
+	for _, e := range config.LastDiscoverSummary.Entries {
+		fmt.Printf("  %-8s  %s@%s  tailscale=%s  online=%v  %s\n",
+			e.Name, e.User, e.IP, e.TailscaleName, e.Online, e.Status)
+	}
+	fmt.Printf("\n\uf00c %d host(s) synced → %s\n", len(config.Hosts), config.DiscoverLogPath())
+}
 
-	path := findConfigPath()
-	if path == "" {
-		die(jsonMode, "hosts use", fmt.Errorf(
-			"can't locate config.json to update (try editing it by hand and setting \"default\":\"%s\")", name))
-	}
+func cliHostsLog(jsonMode bool, lines int) {
+	path := config.DiscoverLogPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		die(jsonMode, "hosts use", err)
+		die(jsonMode, "hosts log", fmt.Errorf("read %s: %w", path, err))
 	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		die(jsonMode, "hosts use", fmt.Errorf("parse %s: %w", path, err))
+	all := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if lines > 0 && len(all) > lines {
+		all = all[len(all)-lines:]
 	}
-	raw["default"] = name
-	if _, ok := raw["schema_version"]; !ok {
-		raw["schema_version"] = 2
+	if jsonMode {
+		emit(jsonMode, "hosts log", map[string]interface{}{
+			"path":  path,
+			"lines": all,
+		}, nil)
+		return
 	}
-	out, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		die(jsonMode, "hosts use", err)
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o600); err != nil {
-		die(jsonMode, "hosts use", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		die(jsonMode, "hosts use", err)
-	}
-
-	// Reflect the change in this process's view of the world too — that
-	// way `pikvm hosts use foo && pikvm switch` does what you'd expect.
-	if err := config.UseHost(name); err != nil {
-		die(jsonMode, "hosts use", err)
-	}
-	config.DefaultHost = name
-
-	emit(jsonMode, "hosts use", map[string]interface{}{
-		"default": name, "active": name, "config_file": path,
-	}, nil)
-	if !jsonMode {
-		fmt.Printf("\uf00c default host now %s (saved to %s)\n", name, path)
+	fmt.Printf("# %s (last %d lines)\n\n", path, lines)
+	for _, line := range all {
+		fmt.Println(line)
 	}
 }
-
-// findConfigPath returns the absolute path to whichever config.json
-// loadJSON() picked up (we re-run the same XDG → home → binary-dir →
-// cwd search to keep a single source of truth).
-func findConfigPath() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		if p := filepath.Join(xdg, "pikvm", "config.json"); fileExists(p) {
-			return p
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if p := filepath.Join(home, ".config", "pikvm", "config.json"); fileExists(p) {
-			return p
-		}
-	}
-	if exe, err := os.Executable(); err == nil {
-		if p := filepath.Join(filepath.Dir(exe), "config.json"); fileExists(p) {
-			return p
-		}
-	}
-	if fileExists("config.json") {
-		abs, _ := filepath.Abs("config.json")
-		return abs
-	}
-	return ""
-}
-
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

@@ -830,9 +830,9 @@ func showHelp() {
 PiKVM Control - Go + Bubble Tea Edition
 
 Usage:
-  pikvm                              Launch interactive TUI against the default host
+  pikvm                              Launch interactive TUI (starts on pikvm1)
   pikvm [--json] [--host N] <cmd>    --host activates a configured PiKVM by name
-                                     (e.g. --host garage). Default: config's "default" field
+                                     (e.g. --host pikvm2). Launch default: pikvm1
                                      or $PIKVM_HOST_NAME.
 
 Always-safe (no PiKVM required):
@@ -878,10 +878,11 @@ Machine workflows (build on profiles — port can be linear/'2.3'/profile-name):
 Multi-host federation (~/.config/pikvm/config.json schema v2):
   pikvm hosts                        List every configured PiKVM (= 'hosts list')
   pikvm hosts show [name]            Connection details for one host (omit name = active)
-  pikvm hosts use <name>             Make this host the new default (rewrites config.json)
+  pikvm hosts sync                   Refresh from 1Password + tailscale, rewrite config.json
+  pikvm hosts log [N]                Show last N lines of ~/.config/pikvm/discover.log
   pikvm --host <name> <command>      Run any command against a specific host
-  pikvm ssh garage:vault             Cross-host SSH shorthand
-                                     (= pikvm --host garage ssh vault)
+  pikvm ssh pikvm2:vault             Cross-host SSH shorthand
+                                     (= pikvm --host pikvm2 ssh vault)
 
 Event hooks (~/.config/pikvm/hooks.d/, fired by the live TUI/WS):
   pikvm hooks                        List every hook on disk (= 'hooks list')

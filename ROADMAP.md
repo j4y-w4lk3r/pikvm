@@ -104,7 +104,7 @@ config.json grew a v2 schema (back-compat with v1 single-host kept):
 - `pikvm ssh garage:vault` — cross-host shorthand (= `--host garage ssh vault`)
 - `$PIKVM_HOST_NAME` — env override for shells / scripts
 - TUI status bar now shows `<user>@lab (<host>)` so the active host is always visible.
-- TUI host *picker* (interactive `H` to switch live) deferred — single user request away from finishing.
+- TUI host picker: press `h` then `1`/`2`/… to switch live between configured PiKVMs (header shows active host name).
 
 ### 15. `[ ]` PXE + ISO + Tailscale = one-shot bare-metal provisioning
 Fuse `pxe/`, the ISO boot scripts, and `setupUbuntuServer`:

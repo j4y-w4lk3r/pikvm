@@ -12,45 +12,58 @@ import (
 func (m Model) renderGridView() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString(headerStyle.Render(" \uf0ce PiKVM Port Grid ") + "\n\n")
+	sb.WriteString(renderAppHeader() + "\n\n")
+
+	perRow := m.gridCellsPerRow()
+	cellW := m.gridCellWidth()
 
 	for ext := 1; ext <= m.extenders; ext++ {
 		sb.WriteString("  " + portInfoStyle.Render(fmt.Sprintf("Extender %d", ext)) + "\n")
 
 		cells := make([][]string, m.portsPerExt)
 		for p := 1; p <= m.portsPerExt; p++ {
-			cells[p-1] = m.renderPortCellLines(m.linearPort(ext, p))
+			cells[p-1] = m.renderPortCellLines(m.linearPort(ext, p), cellW)
 		}
-		for row := 0; row < 6; row++ {
-			sb.WriteString("  ")
-			for i, cell := range cells {
-				if i > 0 {
-					sb.WriteString(" ")
-				}
-				sb.WriteString(cell[row])
+		for start := 0; start < m.portsPerExt; start += perRow {
+			end := start + perRow
+			if end > m.portsPerExt {
+				end = m.portsPerExt
 			}
-			sb.WriteString("\n")
+			batch := cells[start:end]
+			for row := 0; row < 6; row++ {
+				sb.WriteString("  ")
+				for i, cell := range batch {
+					if i > 0 {
+						sb.WriteString(" ")
+					}
+					sb.WriteString(cell[row])
+				}
+				sb.WriteString("\n")
+			}
+			if end < m.portsPerExt {
+				sb.WriteString("\n")
+			}
 		}
 		sb.WriteString("\n")
 	}
 
 	legend := helpStyle.Render("legend: V video  U usb  P power  ★ PiKVM-active")
-	help := helpStyle.Render("arrows/hjkl: move   Enter: switch to port   g or ESC: back   q: quit")
+	help := helpStyle.Render("arrows/hjkl: move   Enter: switch   g/ESC: back   q: quit")
 	sb.WriteString("  " + legend + "\n")
 	sb.WriteString("  " + help + "\n")
-	sb.WriteString("\n  " + m.renderStatusBar() + "\n")
+	for _, line := range m.renderStatusBarLines() {
+		sb.WriteString("\n  " + line)
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }
-
-// cellWidth is the visible character width of the interior of one grid cell.
-const cellWidth = 10
 
 // renderPortCellLines returns a grid cell as 6 fixed-width strings (top
 // border, 4 content rows, bottom border). ASCII-only content so every row
 // lines up regardless of terminal font. The cursor cell uses heavy box-
 // drawing chars (┏ ┓ ┃ ┗ ┛) in success-green; non-cursor cells use light
 // chars (┌ ┐ │ └ ┘) in dim grey. Same visible width so nothing shifts.
-func (m Model) renderPortCellLines(linear int) []string {
+func (m Model) renderPortCellLines(linear int, cellWidth int) []string {
 	id := state.PortExtID(linear, m.portsPerExt)
 	isActive := linear == m.activePort
 	isCursor := m.gridView && linear == m.gridCursor
