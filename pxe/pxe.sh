@@ -38,12 +38,12 @@ NAS_PXE_BASE="/volume1/iPXE"
 NAS_TFTP_ROOT="/volume1/iPXE/tftp"
 NAS_HTTP_ROOT="/volume1/iPXE/http"
 
-# Load .env if exists
+# Load .env if present (never commit .env — see .env.example).
 if [ -f "$ENV_FILE" ]; then
+    # shellcheck source=/dev/null
     source "$ENV_FILE"
-    ISO_PATH="${ISO_PATH:-$PROJECT_DIR/iso/ubuntu-25.10-live-server-amd64.iso}"
-    UBUNTU_PASSWORD="${UBUNTU_PASSWORD:-gPZWRkh7Q6@9Pb4vub7!vA}"
 fi
+ISO_PATH="${ISO_PATH:-$PROJECT_DIR/iso/ubuntu-25.10-live-server-amd64.iso}"
 
 # Defaults (use variables set above)
 OUTPUT_DIR="$PXE_DIR/files"
@@ -84,12 +84,22 @@ ${BLUE}Examples:${NC}
   ./pxe.sh --extract --config --deploy
 
 ${BLUE}Configuration:${NC}
-  Edit .env file for:
+  Copy .env.example to .env and set:
     - ISO_PATH
-    - UBUNTU_PASSWORD
+    - UBUNTU_PASSWORD (required for --config)
     - PXE_HOST, PXE_USER, PXE_IP
 
 EOF
+}
+
+require_ubuntu_password() {
+    if [ -z "$UBUNTU_PASSWORD" ]; then
+        echo -e "${RED}❌ UBUNTU_PASSWORD is not set${NC}"
+        echo ""
+        echo "  Set it in .env (copy from .env.example) or export it:"
+        echo "    UBUNTU_PASSWORD='your-password' ./pxe.sh --config"
+        exit 1
+    fi
 }
 
 extract_iso() {
@@ -164,6 +174,8 @@ generate_config() {
     echo ""
     echo -e "${BLUE}[CONFIG]${NC} Generating autoinstall configuration..."
     echo ""
+
+    require_ubuntu_password
     
     mkdir -p "$OUTPUT_DIR"
     

@@ -29,7 +29,12 @@ Network boot setup for MINISFORUM 795S7 from UGREEN NAS.
 
 ## Configuration
 
-Edit `.env` in project root:
+Copy `.env.example` to `.env` in the project root (`.env` is gitignored):
+
+```bash
+cp .env.example .env
+# edit .env — UBUNTU_PASSWORD is required for --config
+```
 
 ```bash
 ISO_PATH=/path/to/ubuntu-25.10-live-server-amd64.iso
