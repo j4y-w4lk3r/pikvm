@@ -235,6 +235,8 @@ func Run() {
 		cliPrepare(jsonMode, args[1:])
 	case "ssh":
 		cliSSH(jsonMode, args[1:])
+	case "record":
+		cliRecord(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:
@@ -845,6 +847,15 @@ Power / reset (port = linear int '5', ext.port '2.3', OR profile name 'j4yn0'):
   pikvm power long  [port]           Power button long press (force shutdown)
   pikvm reset click [port]           Reset button short press
   pikvm reset long  [port]           Reset button long press
+
+Screen capture:
+  pikvm record [port]                Record 10s HDMI clip to recordings dir
+  pikvm record -d 30 [port]          Custom duration (seconds)
+  pikvm record -o /path/out.mp4      Explicit output file
+                                     Default dir: recordings_dir in config.json,
+                                     or /home/j4y/px/bu/pikvm-recordings (NAS),
+                                     or /mnt/nas/pikvm-recordings (NFS desktop),
+                                     or ~/.config/pikvm/recordings
 
 Per-port profiles (~/.config/pikvm/state.json):
   pikvm profile list                 Show all saved profiles

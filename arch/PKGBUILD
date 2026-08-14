@@ -7,7 +7,7 @@
 # To bump after a new GitHub release:  make aur-bump VER=<new-version>
 
 pkgname=pikvm-bin
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="PiKVM ATX power control — terminal UI and CLI"
 arch=('x86_64' 'aarch64')
@@ -19,7 +19,7 @@ optdepends=(
     '1password-cli: auto-load pikvm1/pikvm2 credentials from 1Password'
     'tailscale: resolve PiKVM host IPs from the tailnet'
     'fzf: fuzzy port/iso/script picker'
-    'ffmpeg: ffplay HDMI stream view'
+    'ffmpeg: ffplay HDMI stream view + 10s screen recordings'
     'mpv: alternate HDMI stream view'
     'chafa: snapshot thumbnails (future grid view)'
 )

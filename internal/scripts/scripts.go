@@ -41,7 +41,8 @@ var Default = []Script{
 	{"Boot to BIOS", "Pick a BIOS key (F7/Del/F2/F12/Esc/...) and spam it", BootToBIOSPlaceholder},
 	{"Type from text.txt", "Type contents of text.txt file", TypeFromTextFile},
 	{"View video stream", "Open PiKVM KVM in browser (video + keyboard/mouse)", ViewVideoStream},
-	{"View video (mpv)", "Watch HDMI stream in mpv (needs websocat + mpv)", ViewVideoMpv},
+	{"View video (mpv)", "Watch HDMI stream in mpv (needs ffmpeg + mpv)", ViewVideoMpv},
+	{"Record 10s clip", "Save 10s HDMI recording to NAS/shared recordings dir", RecordClip},
 }
 
 // ----------------------------------------------------------------------------
@@ -324,6 +325,48 @@ func ViewVideoMpv(port int) string {
 	}()
 
 	return fmt.Sprintf("\uf00c Video stream opened in %s (%s). Close its window when done.", player, api.HostLabel(port))
+}
+
+// RecordClip captures a short MP4 from the active PiKVM HDMI stream.
+func RecordClip(port int) string {
+	dir, err := config.ResolveRecordingsDir()
+	if err != nil {
+		return fmt.Sprintf("\uf057 %v", err)
+	}
+	out := filepath.Join(dir, config.RecordingFilename(config.HostName))
+	res, err := api.RecordVideo(context.Background(), 10*time.Second, out, port)
+	if err != nil {
+		return fmt.Sprintf("\uf057 Record failed: %v", err)
+	}
+	return formatRecordResult(res)
+}
+
+func formatRecordResult(res api.RecordResult) string {
+	msg := fmt.Sprintf("\uf00c Saved %s (%.0fs, %s)", res.Path, res.Duration.Seconds(), formatClipBytes(res.Bytes))
+	if preview := clipPreviewPath(res.Path); preview != "" && preview != res.Path {
+		msg += fmt.Sprintf("\n  Preview on desktop: %s", preview)
+	}
+	return msg
+}
+
+func clipPreviewPath(saved string) string {
+	const nasLocal = "/home/j4y/px/bu/pikvm-recordings"
+	const desktopNFS = "/mnt/nas/pikvm-recordings"
+	if filepath.Dir(saved) == nasLocal {
+		return filepath.Join(desktopNFS, filepath.Base(saved))
+	}
+	return saved
+}
+
+func formatClipBytes(n int64) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // ----------------------------------------------------------------------------

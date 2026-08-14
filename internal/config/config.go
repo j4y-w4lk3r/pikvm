@@ -16,6 +16,7 @@
 //	  },
 //	  "TAILSCALE_AUTH_KEY": "...",   // shared across hosts
 //	  "UBUNTU_PASSWORD":     "..."
+//	  "recordings_dir": "/mnt/nas/pikvm-recordings"  // optional MP4 clips dir
 //	}
 //
 // The legacy single-host schema (v1, with PIKVM_HOST/USER/PASS at top
@@ -60,6 +61,7 @@ var (
 	// Settings shared across hosts.
 	TailscaleAuthKey string
 	UbuntuPassword   string
+	RecordingsDir    string // optional MP4 output dir (schema v2 top-level)
 
 	// HostName is the active host's friendly name (e.g. "pikvm1"). Empty
 	// only when no config has been loaded.
@@ -277,6 +279,7 @@ func loadJSON() error {
 		PIKVMPass        string                `json:"PIKVM_PASS"`
 		TailscaleAuthKey string                `json:"TAILSCALE_AUTH_KEY"`
 		UbuntuPassword   string                `json:"UBUNTU_PASSWORD"`
+		RecordingsDir    string                `json:"recordings_dir,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
@@ -284,6 +287,7 @@ func loadJSON() error {
 
 	TailscaleAuthKey = raw.TailscaleAuthKey
 	UbuntuPassword = raw.UbuntuPassword
+	RecordingsDir = raw.RecordingsDir
 
 	switch {
 	case len(raw.Hosts) > 0:

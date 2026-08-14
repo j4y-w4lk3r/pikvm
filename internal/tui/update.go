@@ -161,6 +161,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.result = scripts.BootFromSpecificISO(msg.port, msg.name)
 		return m, nil
 
+	case recordDoneMsg:
+		m.result = msg.result
+		return m, nil
+
 	case hostSwitchDoneMsg:
 		if msg.err != nil {
 			m.hostSwitching = false
@@ -383,8 +387,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.focusMode == "ops" {
 			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
 		} else if m.focusMode == "scripts" {
+			if scriptIsRecord(scripts.Default[m.cursor].Name) {
+				return m.startRecordClip(m.port)
+			}
 			m.launchScript(m.cursor)
 		} else if m.focusMode == "" && m.inScripts {
+			if scriptIsRecord(scripts.Default[m.cursor].Name) {
+				return m.startRecordClip(m.port)
+			}
 			m.launchScript(m.cursor)
 		} else if m.focusMode == "" && !m.inScripts {
 			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
@@ -487,6 +497,9 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			idx := digit - 1
 			if idx < len(scripts.Default) {
 				m.cursor = idx
+				if scriptIsRecord(scripts.Default[idx].Name) {
+					return m.startRecordClip(m.port)
+				}
 				m.launchScript(idx)
 			}
 		}
