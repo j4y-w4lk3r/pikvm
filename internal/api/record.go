@@ -39,17 +39,19 @@ func RecordVideo(ctx context.Context, duration time.Duration, outputPath string,
 		return RecordResult{}, fmt.Errorf("create output dir: %w", err)
 	}
 
+	// Refresh topology so IsDirectATX / SetSwitchPort behave for this host.
+	_ = FetchSwitchState()
 	_ = SetSwitchPort(port)
 
-	recCtx, cancel := context.WithTimeout(ctx, duration+20*time.Second)
+	recCtx, cancel := context.WithTimeout(ctx, duration+30*time.Second)
 	defer cancel()
 
 	stopKeeper := startStreamKeeper(recCtx)
 	defer stopKeeper()
 
-	// Give the streamer a moment to spin up after the keeper connects.
+	warmup := streamWarmup()
 	select {
-	case <-time.After(750 * time.Millisecond):
+	case <-time.After(warmup):
 	case <-recCtx.Done():
 		return RecordResult{}, recCtx.Err()
 	}
@@ -64,17 +66,13 @@ func RecordVideo(ctx context.Context, duration time.Duration, outputPath string,
 		"-y",
 		"-hide_banner", "-loglevel", "error",
 		"-f", "h264",
-		"-framerate", "30",
+		"-r", "30",
 		"-probesize", "10M",
 		"-analyzeduration", "5M",
-		"-fflags", "nobuffer",
-		"-flags", "low_delay",
+		"-fflags", "+genpts",
 		"-i", "pipe:0",
 		"-t", fmt.Sprintf("%.3f", duration.Seconds()),
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "23",
-		"-pix_fmt", "yuv420p",
+		"-c:v", "copy",
 		"-movflags", "+faststart",
 		outputPath,
 	)
@@ -86,25 +84,40 @@ func RecordVideo(ctx context.Context, duration time.Duration, outputPath string,
 		return RecordResult{}, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	deadline := time.Now().Add(duration)
+	var pumpErr error
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
 		defer func() { _ = stdin.Close() }()
+		deadline := time.Now().Add(duration)
+		gotFrame := false
 		for time.Now().Before(deadline) {
 			readCtx, readCancel := context.WithDeadline(recCtx, deadline)
-			_, data, err := conn.Read(readCtx)
+			chunk, err := readVideoChunk(readCtx, conn)
 			readCancel()
 			if err != nil {
+				if gotFrame {
+					return
+				}
+				pumpErr = fmt.Errorf("waiting for video: %w", err)
 				return
 			}
-			if _, err := stdin.Write(data); err != nil {
+			if len(chunk) == 0 {
+				continue
+			}
+			gotFrame = true
+			if _, err := stdin.Write(chunk); err != nil {
+				pumpErr = err
 				return
 			}
 		}
 	}()
 
 	<-pumpDone
+	if pumpErr != nil {
+		_ = cmd.Process.Kill()
+		return RecordResult{}, fmt.Errorf("video pump: %w", pumpErr)
+	}
 	if err := cmd.Wait(); err != nil {
 		return RecordResult{}, fmt.Errorf("ffmpeg encode: %w", err)
 	}
@@ -113,8 +126,9 @@ func RecordVideo(ctx context.Context, duration time.Duration, outputPath string,
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("stat output: %w", err)
 	}
-	if fi.Size() == 0 {
-		return RecordResult{}, fmt.Errorf("recording is empty (no video data from PiKVM?)")
+	if fi.Size() < 10_000 {
+		_ = os.Remove(outputPath)
+		return RecordResult{}, fmt.Errorf("recording too small (%d bytes) — no usable HDMI video (check host power and display output)", fi.Size())
 	}
 
 	return RecordResult{
@@ -122,6 +136,26 @@ func RecordVideo(ctx context.Context, duration time.Duration, outputPath string,
 		Duration: duration,
 		Bytes:    fi.Size(),
 	}, nil
+}
+
+// streamWarmup is how long to wait after the stream keeper connects before
+// opening the H.264 WebSocket. PiKVM V3 direct-ATX hosts encode at low FPS
+// and need a longer spin-up than switch extenders.
+func streamWarmup() time.Duration {
+	if IsDirectATX() {
+		return 3 * time.Second
+	}
+	return 2 * time.Second
+}
+
+// readVideoChunk returns one WebSocket message of H.264 data. PiKVM may send
+// binary frames directly or JSON-wrapped chunks depending on firmware.
+func readVideoChunk(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func dialMediaWS(ctx context.Context) (*websocket.Conn, error) {

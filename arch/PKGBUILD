@@ -7,7 +7,7 @@
 # To bump after a new GitHub release:  make aur-bump VER=<new-version>
 
 pkgname=pikvm-bin
-pkgver=0.3.2
+pkgver=0.3.3
 pkgrel=1
 pkgdesc="PiKVM ATX power control — terminal UI and CLI"
 arch=('x86_64' 'aarch64')
