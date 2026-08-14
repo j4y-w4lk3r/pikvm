@@ -23,13 +23,17 @@ func TestLiveRecordVideoPikvm2(t *testing.T) {
 	}
 
 	out := t.TempDir() + "/test.mp4"
-	res, err := RecordVideo(context.Background(), 5*time.Second, out, 0)
+	res, err := RecordVideo(context.Background(), 10*time.Second, out, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("path=%s bytes=%d direct_atx=%v", res.Path, res.Bytes, IsDirectATX())
-	if res.Bytes < 10_000 {
-		t.Fatalf("expected substantial video data, got %d bytes", res.Bytes)
+	t.Logf("path=%s bytes=%d frames=%d direct_atx=%v", res.Path, res.Bytes, res.Frames, IsDirectATX())
+	got, err := ProbeMP4Duration(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < 9*time.Second {
+		t.Fatalf("mp4 duration %v, want ~10s", got)
 	}
 }
 
@@ -74,6 +78,64 @@ func TestLiveRecordRawH264(t *testing.T) {
 	t.Logf("raw h264 bytes=%d path=%s direct_atx=%v", total, out, IsDirectATX())
 	if total < 10_000 {
 		t.Fatalf("expected raw h264 data")
+	}
+}
+
+func TestLiveEncodeCapturedH264(t *testing.T) {
+	if err := config.Load(); err != nil {
+		t.Skip(err)
+	}
+	if err := config.UseHost("pikvm2"); err != nil {
+		t.Skip(err)
+	}
+	_ = FetchSwitchState()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	stop := startStreamKeeper(ctx)
+	defer stop()
+	time.Sleep(streamWarmup())
+
+	conn, err := dialMediaWS(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	rawPath := t.TempDir() + "/raw.h264"
+	outPath := t.TempDir() + "/out.mp4"
+	f, _ := os.Create(rawPath)
+	duration := 10 * time.Second
+	deadline := time.Now().Add(duration)
+	frames := 0
+	for time.Now().Before(deadline) {
+		chunk, err := readVideoChunk(ctx, conn)
+		if err != nil {
+			break
+		}
+		if len(chunk) == 0 {
+			continue
+		}
+		f.Write(chunk)
+		frames++
+	}
+	f.Close()
+	st, _ := os.Stat(rawPath)
+	t.Logf("raw bytes=%d frames=%d", st.Size(), frames)
+
+	fps := captureInputFPS(frames, duration)
+	t.Logf("input_fps=%.3f", fps)
+	if err := encodeCapturedH264(ctx, rawPath, outPath, duration, fps); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProbeMP4Duration(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ost, _ := os.Stat(outPath)
+	t.Logf("out bytes=%d duration=%v", ost.Size(), got)
+	if got < 9*time.Second {
+		t.Fatalf("duration %v", got)
 	}
 }
 
