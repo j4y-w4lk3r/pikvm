@@ -207,6 +207,14 @@ func (m *Model) launchScript(idx int) {
 // BOTH bounds before indexing m.powerLeds — otherwise the View() pass
 // panics with "index out of range [-1]" and Bubble Tea kills the program.
 func (m Model) opVisualState(name string) (vs, suffix string) {
+	// ESP32 / HTTP power: PiKVM switch LEDs do not reflect Mac state — always allow click/long.
+	if api.PortUsesHTTPPower(m.port) {
+		switch name {
+		case "Power Click", "Power Long Press", "Power ON", "Power OFF":
+			return "normal", ""
+		}
+	}
+
 	powerOn := m.atxPower
 	if !m.directATX {
 		portKnown := m.port >= 0 && m.port < len(m.powerLeds)

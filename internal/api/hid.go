@@ -21,6 +21,7 @@ func SendKey(key string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	SessionLog("hid_key", map[string]interface{}{"key": key})
 	return nil
 }
 
@@ -37,6 +38,8 @@ func SendText(text string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	// Log length only — never log password text.
+	SessionLog("hid_text", map[string]interface{}{"bytes": len(text)})
 	return nil
 }
 

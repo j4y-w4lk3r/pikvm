@@ -71,6 +71,10 @@ func ActionTarget(act Action, port int) string {
 // ExecuteAction runs act against the given port. Returns a human-readable
 // status string suitable for display in the TUI result area.
 func ExecuteAction(act Action, port int) string {
+	if result, ok := ExecuteActionPower(act, port); ok {
+		return result
+	}
+
 	if strings.HasPrefix(act.APICmd, "SPECIAL:") {
 		specialCmd := strings.TrimPrefix(act.APICmd, "SPECIAL:")
 		switch specialCmd {

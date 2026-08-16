@@ -26,16 +26,35 @@ import (
 	"sync"
 )
 
+// PowerBackend describes non-ATX power control (e.g. ESP32 HTTP relay for Mac mini).
+type PowerBackend struct {
+	Type        string `json:"type,omitempty"` // "http"
+	OnURL       string `json:"on_url,omitempty"`
+	OffURL      string `json:"off_url,omitempty"`
+	ClickURL    string `json:"click_url,omitempty"`
+	LongURL     string `json:"long_url,omitempty"`
+	Method      string `json:"method,omitempty"`
+	CooldownSec int    `json:"cooldown_sec,omitempty"`
+}
+
+func (p *PowerBackend) IsEmpty() bool {
+	if p == nil {
+		return true
+	}
+	return p.Type == "" && p.OnURL == "" && p.OffURL == "" && p.ClickURL == "" && p.LongURL == ""
+}
+
 // PortProfile holds everything a user might want to associate with a port.
 // All fields are optional — an empty profile is the same as no profile.
 type PortProfile struct {
-	Name          string   `json:"name,omitempty"`
-	BIOSKey       string   `json:"bios_key,omitempty"` // matches api.BIOSKeyOption.Key ("F7", "Delete", ...)
-	DefaultISO    string   `json:"default_iso,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	TailscaleName string   `json:"tailscale_name,omitempty"`
-	SSHUser       string   `json:"ssh_user,omitempty"`
-	Notes         string   `json:"notes,omitempty"`
+	Name          string        `json:"name,omitempty"`
+	BIOSKey       string        `json:"bios_key,omitempty"` // matches api.BIOSKeyOption.Key ("F7", "Delete", ...)
+	DefaultISO    string        `json:"default_iso,omitempty"`
+	Tags          []string      `json:"tags,omitempty"`
+	TailscaleName string        `json:"tailscale_name,omitempty"`
+	SSHUser       string        `json:"ssh_user,omitempty"`
+	Notes         string        `json:"notes,omitempty"`
+	Power         *PowerBackend `json:"power,omitempty"`
 }
 
 // State is the persisted root document.
@@ -144,7 +163,8 @@ func SetProfile(s State, extPort string, p PortProfile) State {
 // IsEmpty returns true when every field on p is its zero value.
 func (p PortProfile) IsEmpty() bool {
 	return p.Name == "" && p.BIOSKey == "" && p.DefaultISO == "" &&
-		len(p.Tags) == 0 && p.TailscaleName == "" && p.SSHUser == "" && p.Notes == ""
+		len(p.Tags) == 0 && p.TailscaleName == "" && p.SSHUser == "" && p.Notes == "" &&
+		p.Power.IsEmpty()
 }
 
 // ResolveName maps a profile name (e.g. "j4yn0") to its ext.port id (e.g.

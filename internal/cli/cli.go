@@ -237,6 +237,8 @@ func Run() {
 		cliSSH(jsonMode, args[1:])
 	case "record":
 		cliRecord(jsonMode, args[1:])
+	case "session":
+		cliSession(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:
@@ -384,20 +386,12 @@ func cliPower(jsonMode bool, args []string) {
 	if len(args) == 0 {
 		die(jsonMode, "power", fmt.Errorf("usage: pikvm power on|off|click|long [port]"))
 	}
-	var actName string
 	switch args[0] {
-	case "on":
-		actName = "Power ON"
-	case "off":
-		actName = "Power OFF"
-	case "click":
-		actName = "Power Click"
-	case "long":
-		actName = "Power Long Press"
+	case "on", "off", "click", "long":
+		runPowerAction(jsonMode, "power_"+args[0], args[0], args[1:])
 	default:
 		die(jsonMode, "power", fmt.Errorf("unknown power subcommand %q", args[0]))
 	}
-	runActionByName(jsonMode, "power_"+args[0], actName, args[1:])
 }
 
 func cliReset(jsonMode bool, args []string) {
@@ -446,11 +440,12 @@ func runActionByName(jsonMode bool, command, name string, args []string) {
 }
 
 func cliLegacyAction(jsonMode bool, command string, args []string) {
+	switch command {
+	case "on", "off", "click", "long":
+		runPowerAction(jsonMode, command, command, args)
+		return
+	}
 	mapping := map[string]string{
-		"on":         "Power ON",
-		"off":        "Power OFF",
-		"click":      "Power Click",
-		"long":       "Power Long Press",
 		"reset-long": "Reset Long Press",
 	}
 	name := mapping[command]
@@ -536,6 +531,7 @@ func cliProfileList(jsonMode bool) {
 		if p.Notes != "" {
 			bits = append(bits, "notes="+p.Notes)
 		}
+		bits = append(bits, formatProfilePower(p)...)
 		fmt.Printf("  %-5s  %s\n", id, strings.Join(bits, "  "))
 	}
 }
@@ -577,6 +573,15 @@ func cliProfileGet(jsonMode bool, portArg string) {
 	if p.Notes != "" {
 		fmt.Printf("  notes:          %s\n", p.Notes)
 	}
+	if p.Power != nil && !p.Power.IsEmpty() {
+		fmt.Printf("  power:          type=%s\n", p.Power.Type)
+		if p.Power.OnURL != "" {
+			fmt.Printf("  power_on_url:   %s\n", p.Power.OnURL)
+		}
+		if p.Power.OffURL != "" {
+			fmt.Printf("  power_off_url:  %s\n", p.Power.OffURL)
+		}
+	}
 }
 
 func cliProfileSet(jsonMode bool, portArg string, kvs []string) {
@@ -615,8 +620,12 @@ func cliProfileSet(jsonMode bool, portArg string, kvs []string) {
 			p.SSHUser = v
 		case "notes":
 			p.Notes = v
+		case "power_type", "power_on_url", "power_off_url", "power_click_url", "power_long_url", "power_method", "power_cooldown_sec":
+			if err := applyProfilePowerKey(&p, k, v); err != nil {
+				die(jsonMode, "profile_set", err)
+			}
 		default:
-			die(jsonMode, "profile_set", fmt.Errorf("unknown key %q (valid: name, bios_key, default_iso, tags, tailscale_name, ssh_user, notes)", k))
+			die(jsonMode, "profile_set", fmt.Errorf("unknown key %q (valid: name, bios_key, default_iso, tags, tailscale_name, ssh_user, notes, power_type, power_on_url, power_off_url, power_click_url, power_long_url)", k))
 		}
 	}
 	st = state.SetProfile(st, id, p)
@@ -852,6 +861,16 @@ Screen capture:
   pikvm record [port]                Record 10s HDMI clip to recordings dir
   pikvm record -d 30 [port]          Custom duration (seconds)
   pikvm record -o /path/out.mp4      Explicit output file
+
+Session recording (MP4 chunks + actions.jsonl on NAS):
+  pikvm session start <port> [--name LABEL]   Switch port + start session
+  pikvm session stop                          Stop session and finalize log
+  pikvm session status                        Show active session
+  pikvm session note <text>                   Add note to action log
+
+HTTP power (per-profile, e.g. Mac mini via ESP32):
+  pikvm profile set <port> power_type=http power_on_url=... power_off_url=...
+  pikvm power on|off|click|long [port-or-name]
                                      Default dir: recordings_dir in config.json,
                                      or /home/j4y/px/bu/pikvm-recordings (NAS),
                                      or /mnt/nas/pikvm-recordings (NFS desktop),
