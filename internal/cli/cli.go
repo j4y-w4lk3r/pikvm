@@ -241,6 +241,8 @@ func Run() {
 		cliSession(jsonMode, args[1:])
 	case "snapshot":
 		cliSnapshot(jsonMode, args[1:])
+	case "mouse":
+		cliMouse(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:

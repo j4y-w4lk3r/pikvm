@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -26,7 +27,6 @@ func SendKey(key string) error {
 }
 
 // SendText POSTs raw text to /hid/print so it gets typed on the target.
-// Long text needs the body channel (not a query param).
 func SendText(text string) error {
 	req, cancel, err := NewRequest("POST", "/hid/print", strings.NewReader(text), 30*time.Second)
 	if err != nil {
@@ -55,4 +55,59 @@ func IsSpecialKey(key string) bool {
 		"ArrowUp": true, "ArrowDown": true, "ArrowLeft": true, "ArrowRight": true,
 	}
 	return specialKeys[key]
+}
+
+// PixelToPiKVM converts top-left pixel coords to PiKVM absolute mouse coords (origin at screen center).
+func PixelToPiKVM(x, y, width, height int) (toX, toY int) {
+	if width <= 0 {
+		width = 1920
+	}
+	if height <= 0 {
+		height = 1080
+	}
+	toX = x - width/2
+	toY = y - height/2
+	return toX, toY
+}
+
+// SendMouseMove moves the pointer to absolute PiKVM coordinates (0,0 = screen center).
+func SendMouseMove(toX, toY int) error {
+	endpoint := fmt.Sprintf("/hid/events/send_mouse_move?to_x=%d&to_y=%d", toX, toY)
+	resp, err := Do("POST", endpoint, nil, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	SessionLog("hid_mouse_move", map[string]interface{}{"to_x": toX, "to_y": toY})
+	return nil
+}
+
+// SendMouseButton sends a mouse button press or release (left|right|middle).
+func SendMouseButton(button string, down bool) error {
+	state := "false"
+	if down {
+		state = "true"
+	}
+	endpoint := fmt.Sprintf("/hid/events/send_mouse_button?button=%s&state=%s", button, state)
+	resp, err := Do("POST", endpoint, nil, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	SessionLog("hid_mouse_button", map[string]interface{}{"button": button, "state": down})
+	return nil
+}
+
+// ClickPixel moves to a pixel (top-left origin) and left-clicks.
+func ClickPixel(x, y, width, height int) error {
+	toX, toY := PixelToPiKVM(x, y, width, height)
+	if err := SendMouseMove(toX, toY); err != nil {
+		return err
+	}
+	time.Sleep(80 * time.Millisecond)
+	if err := SendMouseButton("left", true); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return SendMouseButton("left", false)
 }
