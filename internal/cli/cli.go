@@ -239,6 +239,8 @@ func Run() {
 		cliRecord(jsonMode, args[1:])
 	case "session":
 		cliSession(jsonMode, args[1:])
+	case "snapshot":
+		cliSnapshot(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
 		cliLegacyAction(jsonMode, args[0], args[1:])
 	default:
@@ -384,11 +386,21 @@ func cliIso(jsonMode bool, args []string) {
 
 func cliPower(jsonMode bool, args []string) {
 	if len(args) == 0 {
-		die(jsonMode, "power", fmt.Errorf("usage: pikvm power on|off|click|long [port]"))
+		die(jsonMode, "power", fmt.Errorf("usage: pikvm power on|off|click|long|hold [sec] [port]"))
 	}
 	switch args[0] {
 	case "on", "off", "click", "long":
 		runPowerAction(jsonMode, "power_"+args[0], args[0], args[1:])
+	case "hold":
+		holdSec := 0
+		rest := args[1:]
+		if len(rest) > 0 {
+			if n, err := strconv.Atoi(rest[0]); err == nil {
+				holdSec = n
+				rest = rest[1:]
+			}
+		}
+		runPowerHold(jsonMode, holdSec, rest)
 	default:
 		die(jsonMode, "power", fmt.Errorf("unknown power subcommand %q", args[0]))
 	}
@@ -854,6 +866,10 @@ Power / reset (port = linear int '5', ext.port '2.3', OR profile name 'j4yn0'):
   pikvm power off  [port]            Turn power OFF
   pikvm power click [port]           Power button short press
   pikvm power long  [port]           Power button long press (force shutdown)
+  pikvm power hold  [sec] [port]     Sustained hold for Recovery boot (default 12s)
+
+  pikvm snapshot [port] [--out FILE] Capture one JPEG from HDMI
+  pikvm snapshot watch [port] [--dir DIR] [--interval SEC]  Continuous screenshots
   pikvm reset click [port]           Reset button short press
   pikvm reset long  [port]           Reset button long press
 

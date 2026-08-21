@@ -28,6 +28,43 @@ func powerBackendForPort(port int) (*api.PowerBackend, string, state.PortProfile
 	return nil, extID, state.PortProfile{}
 }
 
+func runPowerHold(jsonMode bool, holdSec int, args []string) {
+	port := 0
+	if len(args) > 0 {
+		p, err := parsePort(args[0])
+		if err != nil {
+			die(jsonMode, "power_hold", err)
+		}
+		port = p
+	}
+	pb, extID, profile := powerBackendForPort(port)
+	if pb == nil {
+		die(jsonMode, "power_hold", fmt.Errorf("no HTTP power backend for port (need ESP32 profile)"))
+	}
+	result := api.ExecuteHTTPPowerHold(pb, holdSec)
+	if holdSec <= 0 {
+		holdSec = pb.HoldSec
+	}
+	if holdSec <= 0 {
+		holdSec = 12
+	}
+	api.SessionLog("power_hold", map[string]interface{}{
+		"port": extID, "machine": profile.Name, "hold_sec": holdSec, "backend": "http",
+	})
+	ok := strings.Contains(result, "\uf00c")
+	if jsonMode {
+		if ok {
+			emit(true, "power_hold", map[string]interface{}{
+				"hold_sec": holdSec, "port": extID, "machine": profile.Name,
+			}, nil)
+		} else {
+			emit(false, "power_hold", nil, fmt.Errorf("%s", stripIcons(result)))
+		}
+		return
+	}
+	fmt.Println(result)
+}
+
 func runPowerAction(jsonMode bool, command, action string, args []string) {
 	port := 0
 	if len(args) > 0 {
@@ -99,6 +136,14 @@ func applyProfilePowerKey(p *state.PortProfile, k, v string) error {
 		p.Power.ClickURL = v
 	case "power_long_url":
 		p.Power.LongURL = v
+	case "power_hold_url":
+		p.Power.HoldURL = v
+	case "power_hold_recovery_sec", "hold_recovery_sec":
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+			return fmt.Errorf("hold_recovery_sec: %w", err)
+		}
+		p.Power.HoldSec = n
 	case "power_method":
 		p.Power.Method = v
 	case "power_cooldown_sec":
@@ -135,6 +180,12 @@ func formatProfilePower(p state.PortProfile) []string {
 	}
 	if p.Power.LongURL != "" {
 		bits = append(bits, "power_long_url="+p.Power.LongURL)
+	}
+	if p.Power.HoldURL != "" {
+		bits = append(bits, "power_hold_url="+p.Power.HoldURL)
+	}
+	if p.Power.HoldSec > 0 {
+		bits = append(bits, fmt.Sprintf("hold_recovery_sec=%d", p.Power.HoldSec))
 	}
 	return bits
 }

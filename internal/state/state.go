@@ -33,6 +33,8 @@ type PowerBackend struct {
 	OffURL      string `json:"off_url,omitempty"`
 	ClickURL    string `json:"click_url,omitempty"`
 	LongURL     string `json:"long_url,omitempty"`
+	HoldURL     string `json:"hold_url,omitempty"`
+	HoldSec     int    `json:"hold_recovery_sec,omitempty"`
 	Method      string `json:"method,omitempty"`
 	CooldownSec int    `json:"cooldown_sec,omitempty"`
 }

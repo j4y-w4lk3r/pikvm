@@ -17,6 +17,8 @@ func PowerBackendFromProfile(p state.PortProfile) *PowerBackend {
 		OffURL:      p.Power.OffURL,
 		ClickURL:    p.Power.ClickURL,
 		LongURL:     p.Power.LongURL,
+		HoldURL:     p.Power.HoldURL,
+		HoldSec:     p.Power.HoldSec,
 		Method:      p.Power.Method,
 		CooldownSec: p.Power.CooldownSec,
 	}

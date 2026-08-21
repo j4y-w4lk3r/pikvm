@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,8 @@ type PowerBackend struct {
 	OffURL      string `json:"off_url,omitempty"`
 	ClickURL    string `json:"click_url,omitempty"`
 	LongURL     string `json:"long_url,omitempty"`
+	HoldURL     string `json:"hold_url,omitempty"` // optional: sustained press, e.g. http://esp/hold?sec=12
+	HoldSec     int    `json:"hold_recovery_sec,omitempty"` // default hold duration for Recovery boot
 	Method      string `json:"method,omitempty"`
 	CooldownSec int    `json:"cooldown_sec,omitempty"`
 }
@@ -90,4 +93,51 @@ func ExecuteHTTPPower(p *PowerBackend, action string) string {
 		return fmt.Sprintf("\uf00c Power %s via HTTP (%s)", action, msg)
 	}
 	return fmt.Sprintf("\uf057 HTTP power %s: %s (%s)", action, resp.Status, strings.TrimSpace(string(body)))
+}
+
+// ExecuteHTTPPowerHold triggers a sustained power-button hold for Apple Silicon Recovery boot.
+// Uses HoldURL if set (supports {sec} placeholder), otherwise LongURL with extended timeout.
+func ExecuteHTTPPowerHold(p *PowerBackend, holdSec int) string {
+	if p == nil {
+		return "\uf057 no power backend"
+	}
+	if holdSec <= 0 {
+		holdSec = p.HoldSec
+	}
+	if holdSec <= 0 {
+		holdSec = 12 // Apple Silicon: ~10s until "Loading startup options"
+	}
+	rawURL := strings.TrimSpace(p.HoldURL)
+	if rawURL == "" {
+		rawURL = strings.TrimSpace(p.LongURL)
+	}
+	if rawURL == "" {
+		return "\uf057 no hold_url or long_url configured"
+	}
+	target := strings.ReplaceAll(rawURL, "{sec}", strconv.Itoa(holdSec))
+
+	method := strings.ToUpper(strings.TrimSpace(p.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	// Relay may stay closed for holdSec — allow extra margin for HTTP round-trip.
+	client := &http.Client{Timeout: time.Duration(holdSec+20) * time.Second}
+	req, err := http.NewRequest(method, target, nil)
+	if err != nil {
+		return fmt.Sprintf("\uf057 %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf("\uf057 HTTP power hold %ds: %v", holdSec, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Sprintf("\uf00c Power hold %ds via HTTP (%s)", holdSec, msg)
+	}
+	return fmt.Sprintf("\uf057 HTTP power hold: %s (%s)", resp.Status, strings.TrimSpace(string(body)))
 }
