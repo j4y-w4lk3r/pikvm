@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,12 +37,36 @@ type InfoState struct {
 // InfoMsg is the Bubble Tea message produced by the poller.
 type InfoMsg struct{ State InfoState }
 
+var (
+	infoDedupMu sync.Mutex
+	lastInfo    InfoState
+	lastInfoSet bool
+)
+
+func resetInfoDedup() {
+	infoDedupMu.Lock()
+	defer infoDedupMu.Unlock()
+	lastInfo = InfoState{}
+	lastInfoSet = false
+}
+
+func infoChanged(state InfoState) bool {
+	infoDedupMu.Lock()
+	defer infoDedupMu.Unlock()
+	if lastInfoSet && lastInfo == state {
+		return false
+	}
+	lastInfo = state
+	lastInfoSet = true
+	return true
+}
+
 // StartInfoPoller runs the /api/info fetcher in its own goroutine. First
 // fetch fires immediately, then every InfoPollInterval.
 func StartInfoPoller(ctx context.Context, prog *tea.Program) {
 	go func() {
 		fire := func() {
-			if state, ok := FetchInfoState(); ok {
+			if state, ok := FetchInfoState(); ok && infoChanged(state) {
 				prog.Send(InfoMsg{State: state})
 			}
 		}

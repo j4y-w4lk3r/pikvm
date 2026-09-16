@@ -26,6 +26,25 @@ type uploadDoneMsg struct {
 	err  error
 }
 
+type actionDoneMsg struct {
+	result string
+}
+
+type setPortDoneMsg struct {
+	target int
+	label  string
+	err    error
+}
+
+type isoListDoneMsg struct {
+	entries []api.IsoEntry
+	err     error
+}
+
+type scriptDoneMsg struct {
+	result string
+}
+
 // uploadISOCmd returns a tea.Cmd that performs the HTTP upload off the main
 // goroutine. Bubble Tea will Send the returned tea.Msg to Update() when it
 // finishes, at which point we kick off the boot sequence.
@@ -33,6 +52,31 @@ func uploadISOCmd(entry api.IsoEntry, port int) tea.Cmd {
 	return func() tea.Msg {
 		err := api.UploadISO(entry.LocalPath, entry.Name, nil)
 		return uploadDoneMsg{name: entry.Name, port: port, err: err}
+	}
+}
+
+func actionCmd(action api.Action, port int) tea.Cmd {
+	return func() tea.Msg {
+		return actionDoneMsg{result: api.ExecuteAction(action, port)}
+	}
+}
+
+func setPortCmd(target int, label string) tea.Cmd {
+	return func() tea.Msg {
+		return setPortDoneMsg{target: target, label: label, err: api.SetSwitchPort(target)}
+	}
+}
+
+func fetchISOsCmd() tea.Cmd {
+	return func() tea.Msg {
+		entries, err := api.FetchAvailableISOEntries()
+		return isoListDoneMsg{entries: entries, err: err}
+	}
+}
+
+func scriptCmd(run func() string) tea.Cmd {
+	return func() tea.Msg {
+		return scriptDoneMsg{result: run()}
 	}
 }
 
@@ -72,38 +116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case api.SwitchMsg:
 		m.wsLastEvent = time.Now()
-		if msg.State.TotalPorts > 0 {
-			followActive := m.port == m.activePort || m.port >= msg.State.TotalPorts
-			prevActive := m.activePort
-			prevPower := m.powerLeds
-			m.extenders = msg.State.Extenders
-			m.portsPerExt = msg.State.PortsPerExt
-			m.totalPorts = msg.State.TotalPorts
-			m.activePort = msg.State.ActivePort
-			m.availablePorts = msg.State.Available
-			m.videoLinks = msg.State.VideoLinks
-			m.usbLinks = msg.State.UsbLinks
-			m.powerLeds = msg.State.PowerLeds
-			m.hddLeds = msg.State.HddLeds
-			if followActive {
-				// PiKVM can return -1 when no port is currently routed.
-				// activePort keeps the raw value (so the status bar can
-				// say "no active port"), but the cursor must stay in
-				// [0, totalPorts) so slice indexing never panics.
-				m.port = msg.State.ActivePort
-				if m.port < 0 {
-					m.port = 0
-				}
-			}
-			// Fire transition events only after the first event has
-			// seeded the model so we don't dispatch a port-changed at
-			// startup ("0 → real value" isn't a real transition).
-			if m.firstSwitchSeen {
-				firePortChanged(prevActive, m.activePort, m.portsPerExt)
-				firePowerTransitions(prevPower, m.powerLeds, m.portsPerExt)
-			}
-			m.firstSwitchSeen = true
-		}
+		m.applyLiveSwitch(msg.State)
 		return m, nil
 
 	case api.AtxMsg:
@@ -154,14 +167,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case uploadDoneMsg:
 		if msg.err != nil {
+			m.operationBusy = false
 			m.result = fmt.Sprintf("\uf057 Upload failed: %v", msg.err)
 			return m, nil
 		}
-		// Upload complete → chain into the boot sequence (mount + F7 spam).
-		m.result = scripts.BootFromSpecificISO(msg.port, msg.name)
+		// Upload complete → chain into the boot sequence off the UI thread.
+		m.operationBusy = true
+		m.result = fmt.Sprintf("\uf021 Booting %s…", msg.name)
+		return m, scriptCmd(func() string {
+			return scripts.BootFromSpecificISO(msg.port, msg.name)
+		})
+
+	case actionDoneMsg:
+		m.operationBusy = false
+		m.result = msg.result
+		return m, nil
+
+	case setPortDoneMsg:
+		m.portSwitching = false
+		if msg.err != nil {
+			m.result = fmt.Sprintf("\uf071 Selected %s. set_active: %v", msg.label, msg.err)
+			return m, nil
+		}
+		m.activePort = msg.target
+		m.result = "\uf00c switched to " + msg.label
+		return m, nil
+
+	case isoListDoneMsg:
+		m.operationBusy = false
+		if msg.err != nil {
+			m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", msg.err)
+			return m, nil
+		}
+		if len(msg.entries) == 0 {
+			m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
+			return m, nil
+		}
+		m.selectingISO = true
+		m.availableISOEntries = msg.entries
+		m.isoCursor = 0
+		m.result = ""
+		return m, nil
+
+	case scriptDoneMsg:
+		m.operationBusy = false
+		m.result = msg.result
 		return m, nil
 
 	case recordDoneMsg:
+		m.operationBusy = false
 		m.result = msg.result
 		return m, nil
 
@@ -196,6 +250,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// applyLiveSwitch copies switch topology from a WS event or the startup
+// HTTP fetch onto the model.
+func (m *Model) applyLiveSwitch(sw api.SwitchState) {
+	if sw.TotalPorts <= 0 {
+		return
+	}
+	followActive := !m.portsDetected || m.port == m.activePort || m.port >= sw.TotalPorts
+	prevActive := m.activePort
+	prevPower := m.powerLeds
+	m.extenders = sw.Extenders
+	m.portsPerExt = sw.PortsPerExt
+	if m.portsPerExt < 1 {
+		m.portsPerExt = 1
+	}
+	m.totalPorts = sw.TotalPorts
+	m.activePort = sw.ActivePort
+	m.availablePorts = sw.Available
+	m.videoLinks = sw.VideoLinks
+	m.usbLinks = sw.UsbLinks
+	m.powerLeds = sw.PowerLeds
+	m.hddLeds = sw.HddLeds
+	m.directATX = sw.DirectATX
+	m.portsDetected = true
+	if sw.DirectATX {
+		m.atxPower = len(sw.PowerLeds) > 0 && sw.PowerLeds[0]
+		m.atxHdd = len(sw.HddLeds) > 0 && sw.HddLeds[0]
+	}
+	if followActive {
+		// PiKVM can return -1 when no port is currently routed.
+		// activePort keeps the raw value (so the status bar can
+		// say "no active port"), but the cursor must stay in
+		// [0, totalPorts) so slice indexing never panics.
+		m.port = sw.ActivePort
+		if m.port < 0 {
+			m.port = 0
+		}
+	}
+	// Fire transition events only after the first event has
+	// seeded the model so we don't dispatch a port-changed at
+	// startup ("0 → real value" isn't a real transition).
+	if m.firstSwitchSeen {
+		firePortChanged(prevActive, m.activePort, m.portsPerExt)
+		firePowerTransitions(prevPower, m.powerLeds, m.portsPerExt)
+	}
+	m.firstSwitchSeen = true
 }
 
 // handleKey is the large key-dispatch switch extracted out of Update() for
@@ -351,28 +452,34 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", " ":
 		if m.gridView {
+			if m.portSwitching {
+				return m, nil
+			}
 			target := m.gridCursor
 			if target >= 0 && target < m.totalPorts {
 				m.port = target
-				if err := m.trySetActive(target); err != nil {
-					m.result = fmt.Sprintf("\uf071 set_active: %v", err)
-				} else {
-					curExt := m.extenderOf(target)
-					curPort := m.portOf(target)
-					label := fmt.Sprintf("%d.%d", curExt, curPort)
-					if p, ok := m.state.Ports[state.PortExtID(target, m.portsPerExt)]; ok && p.Name != "" {
-						label += " (" + p.Name + ")"
-					}
-					m.result = "\uf00c switched to " + label
+				curExt := m.extenderOf(target)
+				curPort := m.portOf(target)
+				label := fmt.Sprintf("%d.%d", curExt, curPort)
+				if p, ok := m.state.Ports[state.PortExtID(target, m.portsPerExt)]; ok && p.Name != "" {
+					label += " (" + p.Name + ")"
 				}
+				m.portSwitching = true
+				m.result = "\uf021 Switching to " + label + "…"
+				m.gridView = false
+				return m, setPortCmd(target, label)
 			}
 			m.gridView = false
 			return m, nil
 		}
 		if m.selectingISO {
+			if m.operationBusy {
+				return m, nil
+			}
 			if m.isoCursor < len(m.availableISOEntries) {
 				entry := m.availableISOEntries[m.isoCursor]
 				m.selectingISO = false
+				m.operationBusy = true
 				if entry.LocalPath != "" {
 					// Local ISO — kick off an async in-process upload
 					// (idea #17). Status bar shows live progress via WS
@@ -381,23 +488,45 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.result = fmt.Sprintf("\uf0c1 Uploading %s — live progress in status bar below…", entry.Name)
 					return m, uploadISOCmd(entry, m.port)
 				}
-				// Already on PiKVM — mount + boot synchronously.
-				m.result = scripts.BootFromSpecificISO(m.port, entry.Name)
+				// Already on PiKVM — mount + boot off the UI thread.
+				port := m.port
+				m.result = fmt.Sprintf("\uf021 Booting %s…", entry.Name)
+				return m, scriptCmd(func() string {
+					return scripts.BootFromSpecificISO(port, entry.Name)
+				})
 			}
 		} else if m.focusMode == "ops" {
-			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
+			if m.operationBusy {
+				return m, nil
+			}
+			action := m.actions()[m.cursor]
+			m.operationBusy = true
+			m.result = fmt.Sprintf("\uf021 Running %s…", action.Name)
+			return m, actionCmd(action, m.port)
 		} else if m.focusMode == "scripts" {
+			if m.operationBusy {
+				return m, nil
+			}
 			if scriptIsRecord(scripts.Default[m.cursor].Name) {
 				return m.startRecordClip(m.port)
 			}
-			m.launchScript(m.cursor)
+			return m, m.launchScript(m.cursor)
 		} else if m.focusMode == "" && m.inScripts {
+			if m.operationBusy {
+				return m, nil
+			}
 			if scriptIsRecord(scripts.Default[m.cursor].Name) {
 				return m.startRecordClip(m.port)
 			}
-			m.launchScript(m.cursor)
+			return m, m.launchScript(m.cursor)
 		} else if m.focusMode == "" && !m.inScripts {
-			m.result = api.ExecuteAction(m.actions()[m.cursor], m.port)
+			if m.operationBusy {
+				return m, nil
+			}
+			action := m.actions()[m.cursor]
+			m.operationBusy = true
+			m.result = fmt.Sprintf("\uf021 Running %s…", action.Name)
+			return m, actionCmd(action, m.port)
 		}
 	}
 	return m, nil
@@ -428,8 +557,12 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.result = scripts.BootToBIOSWithKey(m.port, opt)
-		return m, nil
+		port := m.port
+		m.operationBusy = true
+		m.result = fmt.Sprintf("\uf021 Starting %s BIOS boot…", opt.Label)
+		return m, scriptCmd(func() string {
+			return scripts.BootToBIOSWithKey(port, opt)
+		})
 	}
 	if m.focusMode == "host" {
 		digit := int(msg.String()[0] - '0')
@@ -445,6 +578,9 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, switchHostCmd(name)
 	}
 	if m.focusMode == "extender" {
+		if m.portSwitching {
+			return m, nil
+		}
 		digit := int(msg.String()[0] - '0')
 		if digit < 1 || digit > m.extenders {
 			m.result = fmt.Sprintf("\uf071 Only %d extender(s) available (press 1-%d)", m.extenders, m.extenders)
@@ -457,14 +593,15 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.port = newPort
-		if err := m.trySetActive(newPort); err != nil {
-			m.result = fmt.Sprintf("\uf00c Extender %d selected (port %d.%d). \uf071 set_active: %v", digit, digit, curSubPort, err)
-		} else {
-			m.result = fmt.Sprintf("\uf00c Extender %d selected → active port %d.%d", digit, digit, curSubPort)
-		}
-		return m, nil
+		label := fmt.Sprintf("%d.%d", digit, curSubPort)
+		m.portSwitching = true
+		m.result = "\uf021 Switching to " + label + "…"
+		return m, setPortCmd(newPort, label)
 	}
 	if m.focusMode == "port" {
+		if m.portSwitching {
+			return m, nil
+		}
 		digit := int(msg.String()[0] - '0')
 		if digit < 1 || digit > m.portsPerExt {
 			m.result = fmt.Sprintf("\uf071 Only ports 1-%d on extender %d (press 1-%d)", m.portsPerExt, m.extenderOf(m.port), m.portsPerExt)
@@ -477,12 +614,10 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.port = newPort
-		if err := m.trySetActive(newPort); err != nil {
-			m.result = fmt.Sprintf("\uf00c Port %d.%d selected. \uf071 set_active: %v", curExt, digit, err)
-		} else {
-			m.result = fmt.Sprintf("\uf00c Port %d.%d → now active on PiKVM", curExt, digit)
-		}
-		return m, nil
+		label := fmt.Sprintf("%d.%d", curExt, digit)
+		m.portSwitching = true
+		m.result = "\uf021 Switching to " + label + "…"
+		return m, setPortCmd(newPort, label)
 	}
 	if m.focusMode == "ops" {
 		digit := int(msg.String()[0] - '0')
@@ -492,6 +627,9 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.focusMode == "scripts" {
+		if m.operationBusy {
+			return m, nil
+		}
 		digit := int(msg.String()[0] - '0')
 		if digit >= 1 && digit <= 9 {
 			idx := digit - 1
@@ -500,7 +638,7 @@ func (m Model) handleDigit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if scriptIsRecord(scripts.Default[idx].Name) {
 					return m.startRecordClip(m.port)
 				}
-				m.launchScript(idx)
+				return m, m.launchScript(idx)
 			}
 		}
 		return m, nil

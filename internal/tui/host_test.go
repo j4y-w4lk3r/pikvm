@@ -56,6 +56,10 @@ func TestHostRowMultiHost(t *testing.T) {
 			t.Errorf("main view missing %q", want)
 		}
 	}
+	if strings.Count(out, "PiKVM - 100.64.0.10") != 1 {
+		t.Errorf("header should appear exactly once, got %d:\n%s",
+			strings.Count(out, "PiKVM - 100.64.0.10"), out)
+	}
 }
 
 func TestApplyHostSwitchResetsLiveState(t *testing.T) {

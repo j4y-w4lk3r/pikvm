@@ -70,6 +70,7 @@ func formatBytes(n int64) string {
 }
 
 func (m Model) startRecordClip(port int) (tea.Model, tea.Cmd) {
+	m.operationBusy = true
 	m.result = fmt.Sprintf("\uf0c7 Recording %ds clip from %s…", defaultRecordSeconds, config.HostName)
 	return m, recordClipCmd(port, defaultRecordSeconds*time.Second, "")
 }

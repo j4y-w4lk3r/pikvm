@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"pikvm/internal/state"
 )
 
@@ -49,7 +51,9 @@ func (m Model) renderGridView() string {
 
 	legend := helpStyle.Render("legend: V video  U usb  P power  ★ PiKVM-active")
 	help := helpStyle.Render("arrows/hjkl: move   Enter: switch   g/ESC: back   q: quit")
-	sb.WriteString("  " + legend + "\n")
+	if !m.layoutCompact() {
+		sb.WriteString("  " + legend + "\n")
+	}
 	sb.WriteString("  " + help + "\n")
 	for _, line := range m.renderStatusBarLines() {
 		sb.WriteString("\n  " + line)
@@ -76,9 +80,7 @@ func (m Model) renderPortCellLines(linear int, cellWidth int) []string {
 	if p, ok := m.state.Ports[id]; ok && p.Name != "" {
 		name = p.Name
 	}
-	if len(name) > cellWidth-2 {
-		name = name[:cellWidth-2]
-	}
+	name = ansi.Truncate(name, cellWidth-2, "")
 	power := "-"
 	if linear < len(m.powerLeds) {
 		if m.powerLeds[linear] {
@@ -124,16 +126,15 @@ func (m Model) renderPortCellLines(linear int, cellWidth int) []string {
 	}
 }
 
-// padRight pads s with spaces on the right so the rune count is exactly n.
-// Uses rune count (not byte count) because '★' is 3 bytes of UTF-8 but 1
-// display column.
+// padRight pads or clips s to exactly n terminal display columns. Display
+// width—not byte or rune count—is what keeps Unicode names and borders aligned.
 func padRight(s string, n int) string {
-	runes := 0
-	for range s {
-		runes++
+	if n <= 0 {
+		return ""
 	}
-	if runes >= n {
-		return s
+	s = ansi.Truncate(s, n, "")
+	if width := ansi.StringWidth(s); width < n {
+		return s + strings.Repeat(" ", n-width)
 	}
-	return s + strings.Repeat(" ", n-runes)
+	return s
 }

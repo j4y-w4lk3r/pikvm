@@ -58,6 +58,16 @@ func firePowerTransitions(prev, next []bool, portsPerExt int) {
 	if len(prev) == 0 || len(prev) != len(next) {
 		return
 	}
+	flipped := false
+	for i := range prev {
+		if prev[i] != next[i] {
+			flipped = true
+			break
+		}
+	}
+	if !flipped {
+		return
+	}
 	st := state.Load()
 	for i := range prev {
 		if prev[i] == next[i] {

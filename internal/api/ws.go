@@ -1,16 +1,18 @@
 // PiKVM WebSocket client.
 //
-// PiKVM exposes wss://<host>/api/ws?stream=1 which streams JSON event objects
+// PiKVM exposes wss://<host>/api/ws?stream=0|1 which streams JSON event objects
 // of the shape:
 //
 //	{"event_type": "<name>", "event": { ... }}
 //
+// stream=1 also multiplexes HDMI JPEG frames on the same socket. The TUI never
+// displays video, so we connect with stream=0 (events only). Recording keeps
+// its own stream=1 socket in record.go to hold the capture pipeline open.
+//
 // On connect the server emits one of each event type to bootstrap state, then
 // pushes deltas as things change (active port, ATX power LEDs, MSD progress,
-// connected client count, etc.).
-//
-// We subscribe once at startup and pump every interesting event into the
-// Bubble Tea program via tea.Program.Send.
+// connected client count, etc.). Unchanged payloads are not forwarded into
+// Bubble Tea so the UI thread is not redrawing identical frames.
 
 package api
 
@@ -20,8 +22,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -128,7 +132,7 @@ func StartWebSocket(ctx context.Context, prog *tea.Program) {
 }
 
 func runWSOnce(ctx context.Context, prog *tea.Program) error {
-	url := fmt.Sprintf("wss://%s/api/ws?stream=1", config.Host)
+	url := fmt.Sprintf("wss://%s/api/ws?stream=0", config.Host)
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -150,11 +154,12 @@ func runWSOnce(ctx context.Context, prog *tea.Program) error {
 		return fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "client closed")
-	conn.SetReadLimit(4 * 1024 * 1024)
+	conn.SetReadLimit(1 * 1024 * 1024)
 
 	wsCurrentConn.Store(conn)
 	defer wsCurrentConn.Store(nil)
 
+	resetWSDedup()
 	prog.Send(ConnectedMsg{})
 
 	for {
@@ -174,6 +179,9 @@ func runWSOnce(ctx context.Context, prog *tea.Program) error {
 // ----------------------------------------------------------------------------
 
 func dispatchEvent(prog *tea.Program, data []byte) {
+	if len(data) == 0 || data[0] != '{' {
+		return
+	}
 	var head struct {
 		EventType string          `json:"event_type"`
 		Event     json.RawMessage `json:"event"`
@@ -183,19 +191,19 @@ func dispatchEvent(prog *tea.Program, data []byte) {
 	}
 	switch head.EventType {
 	case "switch":
-		if msg, ok := decodeSwitchEvent(head.Event); ok {
+		if msg, ok := decodeSwitchEvent(head.Event); ok && switchChanged(msg.State) {
 			prog.Send(msg)
 		}
 	case "atx":
-		if msg, ok := decodeAtxEvent(head.Event); ok {
+		if msg, ok := decodeAtxEvent(head.Event); ok && atxChanged(msg) {
 			prog.Send(msg)
 		}
 	case "msd":
-		if msg, ok := decodeMsdEvent(head.Event); ok {
+		if msg, ok := decodeMsdEvent(head.Event); ok && msdChanged(msg) {
 			prog.Send(msg)
 		}
 	case "clients":
-		if msg, ok := decodeClientsEvent(head.Event); ok {
+		if msg, ok := decodeClientsEvent(head.Event); ok && clientsChanged(msg.Count) {
 			prog.Send(msg)
 		}
 	}
@@ -345,4 +353,98 @@ func decodeClientsEvent(raw json.RawMessage) (ClientsMsg, bool) {
 		return ClientsMsg{}, false
 	}
 	return ClientsMsg{Count: parsed.Count}, true
+}
+
+// ----------------------------------------------------------------------------
+// Dedup: skip Bubble Tea messages when the parsed payload did not change.
+// ----------------------------------------------------------------------------
+
+type wsDedupState struct {
+	mu          sync.Mutex
+	switchSet   bool
+	lastSwitch  SwitchState
+	atxSet      bool
+	lastAtx     AtxMsg
+	msdSet      bool
+	lastMsd     MsdMsg
+	clientsSet  bool
+	lastClients int
+}
+
+var wsDedup wsDedupState
+
+// ResetLiveDedup clears WS + /api/info "last seen" snapshots. Call on host
+// switch so the next event from the new box is never compared to the old one.
+func ResetLiveDedup() {
+	resetWSDedup()
+	resetInfoDedup()
+}
+
+func resetWSDedup() {
+	wsDedup.mu.Lock()
+	defer wsDedup.mu.Unlock()
+	wsDedup.switchSet = false
+	wsDedup.lastSwitch = SwitchState{}
+	wsDedup.atxSet = false
+	wsDedup.lastAtx = AtxMsg{}
+	wsDedup.msdSet = false
+	wsDedup.lastMsd = MsdMsg{}
+	wsDedup.clientsSet = false
+	wsDedup.lastClients = 0
+}
+
+func switchStateEqual(a, b SwitchState) bool {
+	return a.DirectATX == b.DirectATX &&
+		a.Extenders == b.Extenders &&
+		a.PortsPerExt == b.PortsPerExt &&
+		a.TotalPorts == b.TotalPorts &&
+		a.ActivePort == b.ActivePort &&
+		slices.Equal(a.VideoLinks, b.VideoLinks) &&
+		slices.Equal(a.UsbLinks, b.UsbLinks) &&
+		slices.Equal(a.PowerLeds, b.PowerLeds) &&
+		slices.Equal(a.HddLeds, b.HddLeds)
+}
+
+func switchChanged(s SwitchState) bool {
+	wsDedup.mu.Lock()
+	defer wsDedup.mu.Unlock()
+	if wsDedup.switchSet && switchStateEqual(wsDedup.lastSwitch, s) {
+		return false
+	}
+	wsDedup.lastSwitch = s
+	wsDedup.switchSet = true
+	return true
+}
+
+func atxChanged(msg AtxMsg) bool {
+	wsDedup.mu.Lock()
+	defer wsDedup.mu.Unlock()
+	if wsDedup.atxSet && wsDedup.lastAtx == msg {
+		return false
+	}
+	wsDedup.lastAtx = msg
+	wsDedup.atxSet = true
+	return true
+}
+
+func msdChanged(msg MsdMsg) bool {
+	wsDedup.mu.Lock()
+	defer wsDedup.mu.Unlock()
+	if wsDedup.msdSet && wsDedup.lastMsd == msg {
+		return false
+	}
+	wsDedup.lastMsd = msg
+	wsDedup.msdSet = true
+	return true
+}
+
+func clientsChanged(n int) bool {
+	wsDedup.mu.Lock()
+	defer wsDedup.mu.Unlock()
+	if wsDedup.clientsSet && wsDedup.lastClients == n {
+		return false
+	}
+	wsDedup.lastClients = n
+	wsDedup.clientsSet = true
+	return true
 }

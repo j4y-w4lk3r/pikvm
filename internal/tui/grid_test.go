@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"pikvm/internal/state"
 )
 
@@ -49,4 +51,22 @@ func TestGridRender(t *testing.T) {
 		}
 	}
 	t.Log("\n" + out)
+}
+
+func TestPadRightUsesDisplayWidth(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "ascii", text: "host"},
+		{name: "wide unicode", text: "主机"},
+		{name: "star", text: "1.1 ★"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := padRight(tc.text, 6)
+			if width := ansi.StringWidth(got); width != 6 {
+				t.Fatalf("padRight(%q) width = %d, want 6; got %q", tc.text, width, got)
+			}
+		})
+	}
 }

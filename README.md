@@ -245,7 +245,7 @@ When you change extender or port, the TUI **automatically calls** `POST /api/swi
 
 ### Live state via WebSocket
 
-The TUI keeps a persistent `wss://<host>/api/ws?stream=1` subscription. Whenever **anything** changes the PiKVM — this binary, the web UI, your phone over Tailscale, a button on the device — the active port indicator, ATX status, MSD info, **and per-port video / USB / power signals** update in real time without polling. A small live indicator at the bottom shows:
+The TUI keeps a persistent `wss://<host>/api/ws?stream=0` subscription (events only — no HDMI JPEG frames). Whenever **anything** changes the PiKVM — this binary, the web UI, your phone over Tailscale, a button on the device — the active port indicator, ATX status, MSD info, **and per-port video / USB / power signals** update in real time without polling. A small live indicator at the bottom shows:
 
 ```
 ● ws live  │  clients 2  │  MSD idle (18.4G free)

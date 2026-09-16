@@ -29,8 +29,10 @@ func PowerBackendForPort(port int) (*PowerBackend, string) {
 	if port < 0 {
 		return nil, ""
 	}
-	sw := FetchSwitchState()
-	extID := state.PortExtID(port, sw.PortsPerExt)
+	// Topology is already cached atomically whenever /api/switch or its
+	// WebSocket event is decoded. Looking up a profile must not issue another
+	// network request—especially because TUI rendering asks this repeatedly.
+	extID := state.PortExtID(port, LastPortsPerExt())
 	st := state.Load()
 	p := state.GetProfile(st, extID)
 	if pb := PowerBackendFromProfile(p); pb != nil && pb.UsesHTTP() {

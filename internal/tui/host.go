@@ -13,13 +13,13 @@ import (
 // hostSwitchDoneMsg is returned by switchHostCmd after config.UseHost,
 // a fresh /api/switch fetch, and an immediate /api/info poll.
 type hostSwitchDoneMsg struct {
-	name         string
-	prevName     string
-	prevHost     string
-	sw           api.SwitchState
-	info         api.InfoState
-	infoOK       bool
-	err          error
+	name     string
+	prevName string
+	prevHost string
+	sw       api.SwitchState
+	info     api.InfoState
+	infoOK   bool
+	err      error
 }
 
 // multiHostEnabled is true when config.json v2 lists more than one PiKVM.
@@ -65,6 +65,7 @@ func switchHostCmd(name string) tea.Cmd {
 			})
 		}
 		api.InvalidateISOCache()
+		api.ResetLiveDedup()
 		api.RequestWSReconnect()
 		sw := api.FetchSwitchState()
 		info, infoOK := api.FetchInfoState()
@@ -111,6 +112,8 @@ func (m *Model) applyHostSwitch(msg hostSwitchDoneMsg) {
 	m.gridView = false
 	m.gridCursor = cursor
 	m.hostSwitching = false
+	m.operationBusy = false
+	m.portSwitching = false
 	m.showHelp = false
 
 	m.wsConnected = false

@@ -49,14 +49,21 @@ var (
 			Foreground(lipgloss.Color("#888888"))
 )
 
-// wrapAppFrame draws the lime border around any screen content, sized to the
-// terminal when known so tmux splits don't spill past the pane edge.
+// wrapAppFrame draws the lime border around screen content. Once Bubble Tea has
+// reported the terminal size, the frame occupies the complete pane. Lipgloss's
+// Width/Height include padding but exclude the border, so subtract only the
+// two border cells when forcing the outer dimensions.
 func (m Model) wrapAppFrame(content string) string {
-	s := appFrameStyle
-	if m.termWidth > 0 {
-		s = s.MaxWidth(m.termWidth)
+	if m.termWidth <= frameOverhead || m.termHeight <= frameOverheadV {
+		return appFrameStyle.Render(content)
 	}
-	return s.Render(content)
+
+	innerW := m.contentWidth()
+	content = fitContentLines(content, innerW)
+	return appFrameStyle.
+		Width(m.termWidth - 2).
+		Height(m.termHeight - 2).
+		Render(content)
 }
 
 // Per-port status glyphs from JetBrainsMono Nerd Font (Font Awesome).

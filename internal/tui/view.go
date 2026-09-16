@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -13,24 +14,36 @@ import (
 )
 
 // View is Bubble Tea's render function. Branches on the various modal
-// states; the main two-column layout is the default.
+// states; the main two-column layout is the default. Identical frames
+// reuse the last painted string so no-op keys do not rebuild lipgloss.
 func (m Model) View() string {
-	var content string
+	key := m.viewKey()
+	if m.viewCache != nil && m.viewCache.key == key {
+		return m.viewCache.out
+	}
+	out := m.wrapAppFrame(m.renderContent())
+	if m.viewCache != nil {
+		m.viewCache.key = key
+		m.viewCache.out = out
+	}
+	return out
+}
+
+func (m Model) renderContent() string {
 	switch {
 	case m.quitting:
-		content = successStyle.Render("\n\uf00c Goodbye!\n\n")
+		return successStyle.Render("\n\uf00c Goodbye!\n\n")
 	case m.showHelp:
-		content = m.renderHelpView()
+		return m.renderHelpView()
 	case m.gridView:
-		content = m.renderGridView()
+		return m.renderGridView()
 	case m.selectingBIOSKey:
-		content = m.renderBIOSPicker()
+		return m.renderBIOSPicker()
 	case m.selectingISO:
-		content = m.renderISOPicker()
+		return m.renderISOPicker()
 	default:
-		content = m.renderMain()
+		return m.renderMain()
 	}
-	return m.wrapAppFrame(content)
 }
 
 // renderBIOSPicker (idea #6) — two-column key chooser with per-port saved default.
@@ -113,12 +126,15 @@ func (m Model) renderISOPicker() string {
 // renderMain adapts between two-column (wide) and stacked (narrow) layouts.
 func (m Model) renderMain() string {
 	portCellW := m.portCellWidth()
+	compact := m.layoutCompact()
+	headerGap := "\n\n"
+	if compact {
+		headerGap = "\n"
+	}
 
 	var left strings.Builder
 	left.WriteString("\n")
-	left.WriteString(renderAppHeader() + "\n\n")
-
-	left.WriteString(renderAppHeader() + "\n\n")
+	left.WriteString(renderAppHeader() + headerGap)
 
 	// [H] Host row — only when multiple PiKVMs are configured.
 	if multiHostEnabled() {
@@ -148,7 +164,9 @@ func (m Model) renderMain() string {
 	}
 
 	// [E] Extender / [P] Port rows — hidden on direct-ATX hosts (no KVM switch).
-	if m.directATX {
+	if !m.portsDetected {
+		left.WriteString("  " + helpStyle.Render("\uf021 Connecting — fetching ports…") + "\n\n")
+	} else if m.directATX {
 		left.WriteString("  " + unselectedStyle.Render("[A] ATX:     direct (no KVM switch)") + "\n")
 		powerGlyph := iconDim
 		powerStyle := helpStyle
@@ -240,9 +258,12 @@ func (m Model) renderMain() string {
 			selLabel = fmt.Sprintf("%s (%s)", selLabel, p.Name)
 		}
 		summary := fmt.Sprintf("\uf0e4 Selected: %s  ", selLabel)
-		legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
 		left.WriteString("  " + portInfoStyle.Render(summary) + syncIcon + "\n")
-		left.WriteString("  " + legend + "\n\n")
+		if !compact {
+			legend := helpStyle.Render(fmt.Sprintf("  legend: %s video  %s usb  %s power", iconVideo, iconUsb, iconPower))
+			left.WriteString("  " + legend + "\n")
+		}
+		left.WriteString("\n")
 	}
 
 	// [O] Operations
@@ -267,9 +288,10 @@ func (m Model) renderMain() string {
 
 	var mainBody string
 	if m.useTwoColumns() {
-		leftCol := lipgloss.NewStyle().Width(m.contentWidth() * 55 / 100).Render(left.String())
-		rightCol := lipgloss.NewStyle().Width(m.contentWidth()*45/100 - 3).Render(scriptsBlock)
-		mainBody = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "   ", rightCol)
+		leftW, rightW, gap := m.columnWidths()
+		leftCol := lipgloss.NewStyle().Width(leftW).MaxWidth(leftW).Render(left.String())
+		rightCol := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW).Render(scriptsBlock)
+		mainBody = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, strings.Repeat(" ", gap), rightCol)
 	} else {
 		mainBody = lipgloss.JoinVertical(lipgloss.Left,
 			left.String(),
@@ -307,11 +329,14 @@ func (m Model) renderMain() string {
 }
 
 // renderScriptsBlock is the [C] Custom Scripts column/section.
-func (m Model) renderScriptsBlock(wideOffset bool) string {
+func (m Model) renderScriptsBlock(wideLayout bool) string {
 	var right strings.Builder
-	if wideOffset {
+	switch {
+	case wideLayout && !m.layoutCompact():
 		right.WriteString("\n\n\n")
-	} else {
+	case wideLayout:
+		right.WriteString("\n")
+	default:
 		right.WriteString("\n")
 	}
 	if m.focusMode == "scripts" {
@@ -333,8 +358,9 @@ func (m Model) renderScriptsBlock(wideOffset bool) string {
 }
 
 func (m Model) renderHelpLines() []string {
-	w := m.contentWidth()
-	if w < 72 {
+	w := m.indentedContentWidth()
+	compact := m.layoutCompact()
+	if w < 72 || compact {
 		line1 := "?:Help  o:Ops  c:Scripts  ESC  r  q"
 		if !m.directATX {
 			line1 = "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  ESC  r  q"
@@ -342,7 +368,7 @@ func (m Model) renderHelpLines() []string {
 		if multiHostEnabled() {
 			line1 = "h:Host  " + line1
 		}
-		return []string{helpStyle.Render(line1)}
+		return wrapStyledText(line1, w, helpStyle)
 	}
 	helpKeys := "?: Help  o: Ops  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
 	if !m.directATX {
@@ -351,7 +377,7 @@ func (m Model) renderHelpLines() []string {
 	if multiHostEnabled() {
 		helpKeys = "h: Host  " + helpKeys
 	}
-	return packStyledLines([]string{helpStyle.Render(helpKeys)}, w, " ")
+	return wrapStyledText(helpKeys, w, helpStyle)
 }
 
 // portStatusGlyphs returns a 3-glyph status string for one linear port
@@ -374,7 +400,7 @@ func (m Model) portStatusGlyphs(linear int) string {
 
 // renderStatusBarLines returns one or more status-bar rows that fit the pane.
 func (m Model) renderStatusBarLines() []string {
-	return packStyledLines(m.statusBarParts(), m.contentWidth(), helpStyle.Render("  │  "))
+	return packStyledLines(m.statusBarParts(), m.indentedContentWidth(), helpStyle.Render("  │  "))
 }
 
 func (m Model) statusBarParts() []string {
@@ -472,4 +498,68 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%dB", n)
 	}
+}
+
+// viewCache is pointed at from Model so value-copies still share one buffer.
+type viewCache struct {
+	key string
+	out string
+}
+
+func writeBools(b *strings.Builder, v []bool) {
+	for _, x := range v {
+		if x {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+	}
+	b.WriteByte('|')
+}
+
+// viewKey fingerprints every field View() reads. Matching keys mean the
+// framed string can be reused instead of rebuilding lipgloss layout.
+func (m Model) viewKey() string {
+	var b strings.Builder
+	b.Grow(256)
+	fmt.Fprintf(&b, "%t %t %t %t %t %q %t %d %d %d %d %d %d %d %d %t %t %t %t %t %d %d ",
+		m.quitting, m.showHelp, m.gridView, m.selectingISO, m.selectingBIOSKey,
+		m.focusMode, m.inScripts,
+		m.cursor, m.port, m.gridCursor, m.isoCursor,
+		m.extenders, m.portsPerExt, m.totalPorts, m.activePort,
+		m.directATX, m.portsDetected, m.hostSwitching, m.operationBusy, m.portSwitching,
+		m.termWidth, m.termHeight)
+	fmt.Fprintf(&b, "%t %q %d %t %t %t ",
+		m.wsConnected, m.wsLastError, m.wsClients, m.atxPower, m.atxHdd, m.atxBusy)
+	fmt.Fprintf(&b, "%t %t %t %d %d %t %q %.0f ",
+		m.msdOnline, m.msdBusy, m.msdConnect, m.msdFree, m.msdTotal, m.msdUpload, m.msdUpName, m.msdUpPct)
+	fmt.Fprintf(&b, "%q %q %q %d %d %.0f ",
+		m.info.Platform, m.info.KvmdVersion, m.info.Hostname, m.info.UptimeTotal, m.info.CPUPercent, m.info.CPUTempC)
+	fmt.Fprintf(&b, "%q %s %s %s ", m.result, config.Host, config.HostName, config.User)
+	writeBools(&b, m.videoLinks)
+	writeBools(&b, m.usbLinks)
+	writeBools(&b, m.powerLeds)
+	writeBools(&b, m.hddLeds)
+	for _, e := range m.availableISOEntries {
+		b.WriteString(e.Display)
+		b.WriteByte(0)
+	}
+	if len(m.state.Ports) > 0 {
+		ids := make([]string, 0, len(m.state.Ports))
+		for id := range m.state.Ports {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			p := m.state.Ports[id]
+			fmt.Fprintf(&b, "%s=%s:%s;", id, p.Name, p.BIOSKey)
+		}
+	}
+	if multiHostEnabled() {
+		for _, name := range config.HostNames() {
+			b.WriteString(name)
+			b.WriteByte(',')
+		}
+	}
+	return b.String()
 }

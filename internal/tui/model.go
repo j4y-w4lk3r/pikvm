@@ -84,20 +84,32 @@ type Model struct {
 	// Multi-host federation (roadmap #25): async switch in flight.
 	hostSwitching bool
 
+	// In-flight commands. Network and long-running work must never execute in
+	// Update(), because it would stop Bubble Tea from processing key messages.
+	operationBusy bool
+	portSwitching bool
+
 	// directATX is true for PiKVM V3-style hosts with built-in ATX only (no KVM switch).
 	directATX bool
+
+	// Shared across Model copies so View() can reuse the last framed
+	// string when nothing visual changed (no-op keys, duplicate paints).
+	viewCache *viewCache
 
 	// Hooks event suppression on first event (idea #20). The first
 	// SwitchMsg / MsdMsg / ClientsMsg after startup populates the model
 	// from "zero" values — we don't want that to fire spurious "port
 	// changed from 0 to 5" hooks. These flags flip to true after the
 	// first message of each kind so subsequent transitions dispatch.
-	firstSwitchSeen   bool
-	firstMsdSeen      bool
-	firstClientsSeen  bool
+	firstSwitchSeen  bool
+	firstMsdSeen     bool
+	firstClientsSeen bool
 }
 
-// InitialModel builds the starting TUI model.
+// InitialModel builds the starting TUI model without touching the network.
+// Switch topology is fetched in Init() via fetchSwitchCmd so the first
+// frame can paint immediately. portsPerExt is 1 so extender/port helpers
+// never divide by zero before the fetch lands.
 //
 // PiKVM's /api/switch can return summary.active_id == -1 (no port
 // currently routed). We keep that as-is in m.activePort (so the status
@@ -105,27 +117,15 @@ type Model struct {
 // — the cursor is what the user is hovering over, and indexing slices
 // by it must never panic.
 func InitialModel() Model {
-	sw := api.FetchSwitchState()
-	cursor := sw.ActivePort
-	if cursor < 0 {
-		cursor = 0
-	}
 	return Model{
-		port:           cursor,
-		extenders:      sw.Extenders,
-		portsPerExt:    sw.PortsPerExt,
-		totalPorts:     sw.TotalPorts,
-		activePort:     sw.ActivePort,
-		availablePorts: sw.Available,
-		videoLinks:     sw.VideoLinks,
-		usbLinks:       sw.UsbLinks,
-		powerLeds:      sw.PowerLeds,
-		hddLeds:        sw.HddLeds,
-		portsDetected:  true,
-		directATX:      sw.DirectATX,
-		atxPower:       len(sw.PowerLeds) > 0 && sw.PowerLeds[0],
-		atxHdd:         len(sw.HddLeds) > 0 && sw.HddLeds[0],
+		extenders:      1,
+		portsPerExt:    1,
+		totalPorts:     1,
+		availablePorts: []api.PortInfo{{ID: 0, Active: true}},
+		powerLeds:      []bool{false},
+		hddLeds:        []bool{false},
 		state:          state.Load(),
+		viewCache:      &viewCache{},
 	}
 }
 
@@ -133,10 +133,16 @@ func (m Model) actions() []api.Action {
 	return api.ActionsForDirect(m.directATX)
 }
 
-// Init is Bubble Tea's startup hook. We do nothing here; external pollers
-// (WebSocket, info) are started in main() and send events via prog.Send.
+// Init is Bubble Tea's startup hook. Window size plus a background
+// /api/switch fetch; the WebSocket and info poller are started in main().
 func (m Model) Init() tea.Cmd {
-	return tea.WindowSize()
+	return tea.Batch(tea.WindowSize(), fetchSwitchCmd())
+}
+
+func fetchSwitchCmd() tea.Cmd {
+	return func() tea.Msg {
+		return api.SwitchMsg{State: api.FetchSwitchState()}
+	}
 }
 
 // ---- helpers on Model ------------------------------------------------------
@@ -158,6 +164,18 @@ func (m Model) savedBIOSKey(linear int) string {
 	return m.state.Ports[m.portExtIDOf(linear)].BIOSKey
 }
 
+// portUsesHTTPPower answers from the state snapshot already held by the model.
+// View must never call api.PortUsesHTTPPower: that API helper may read state
+// from disk and is intended for one-shot CLI/action execution.
+func (m Model) portUsesHTTPPower(linear int) bool {
+	if linear < 0 {
+		return false
+	}
+	profile := m.state.Ports[m.portExtIDOf(linear)]
+	backend := api.PowerBackendFromProfile(profile)
+	return backend != nil && backend.UsesHTTP()
+}
+
 // trySetActive switches PiKVM's active port and updates m.activePort.
 func (m *Model) trySetActive(linear int) error {
 	if err := api.SetSwitchPort(linear); err != nil {
@@ -167,33 +185,27 @@ func (m *Model) trySetActive(linear int) error {
 	return nil
 }
 
-// launchScript runs (or pops the modal for) the custom script at idx.
-func (m *Model) launchScript(idx int) {
+// launchScript opens a modal or returns a command for work that may perform
+// I/O or sleep. The returned command runs outside Bubble Tea's update loop.
+func (m *Model) launchScript(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(scripts.Default) {
-		return
+		return nil
 	}
 	s := scripts.Default[idx]
 	switch s.Name {
 	case "Boot from ISO":
 		m.result = "\uf0c1 Fetching ISOs (PiKVM + local iso/)..."
-		entries, err := api.FetchAvailableISOEntries()
-		if err != nil {
-			m.result = fmt.Sprintf("\uf057 Failed to fetch ISOs: %v", err)
-			return
-		}
-		if len(entries) == 0 {
-			m.result = "\uf06a No ISOs found. Put .iso files in ./iso/ or upload: ./pikvm.sh --iso --upload /path/to/file.iso"
-			return
-		}
-		m.selectingISO = true
-		m.availableISOEntries = entries
-		m.isoCursor = 0
-		m.result = ""
+		m.operationBusy = true
+		return fetchISOsCmd()
 	case "Boot to BIOS":
 		m.selectingBIOSKey = true
 		m.result = ""
+		return nil
 	default:
-		m.result = s.Run(m.port)
+		m.operationBusy = true
+		m.result = fmt.Sprintf("\uf021 Running %s…", s.Name)
+		port := m.port
+		return scriptCmd(func() string { return s.Run(port) })
 	}
 }
 
@@ -208,7 +220,7 @@ func (m *Model) launchScript(idx int) {
 // panics with "index out of range [-1]" and Bubble Tea kills the program.
 func (m Model) opVisualState(name string) (vs, suffix string) {
 	// ESP32 / HTTP power: PiKVM switch LEDs do not reflect Mac state — always allow click/long.
-	if api.PortUsesHTTPPower(m.port) {
+	if m.portUsesHTTPPower(m.port) {
 		switch name {
 		case "Power Click", "Power Long Press", "Power ON", "Power OFF":
 			return "normal", ""
