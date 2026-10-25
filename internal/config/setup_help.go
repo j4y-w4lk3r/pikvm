@@ -2,9 +2,9 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
-
-	"pikvm/internal/onepassword"
 )
 
 // LoadError is returned when 1Password bootstrap and local config files both fail.
@@ -17,7 +17,7 @@ func (e *LoadError) Error() string {
 	var b strings.Builder
 	b.WriteString("could not load PiKVM configuration")
 	if e.BootstrapErr != nil {
-		b.WriteString("\n\n1Password + Tailscale bootstrap:\n  ")
+		b.WriteString("\n\nOpenBao + Tailscale bootstrap:\n  ")
 		b.WriteString(e.BootstrapErr.Error())
 	}
 	if e.LocalErr != nil {
@@ -27,49 +27,38 @@ func (e *LoadError) Error() string {
 	return b.String()
 }
 
-// SetupHelp returns platform-agnostic setup instructions (1Password first).
+// SetupHelp returns setup instructions for the OpenBao login.
 func SetupHelp() string {
-	opHint := "installed"
-	if !onepassword.Available() {
-		opHint = "not found — install: yay -S 1password-cli  (Arch) / brew install 1password-cli"
+	tokenHint := "present"
+	if _, err := os.Stat(filepath.Join(configDir(), "openbao-pikvm.token")); err != nil {
+		tokenHint = "missing — " + filepath.Join(configDir(), "openbao-pikvm.token")
 	}
 	return fmt.Sprintf(`%s
 
-PiKVM loads credentials automatically — no manual config.json needed when:
+PiKVM loads credentials from OpenBao — no 1Password session needed when:
 
-  1. 1Password CLI (op) is installed and signed in
-  2. tailscale is running on this machine
-  3. Login items named pikvm1, pikvm2, … exist (web username / web password)
+  1. ~/.config/j4y/openbao.addr names the Tailscale OpenBao address
+  2. ~/.config/j4y/openbao-pikvm.token can read secret/pikvm/pikvmN
+  3. tailscale is running on this machine
 
-Current op status: %s
+Current token file: %s
 
-── Headless server setup (NAS, VPS, etc.) ──
-
-  # Arch Linux
-  yay -S 1password-cli tailscale
-
-  # Sign in to 1Password (interactive once; caches session in ~/.config/op/)
-  op signin
-
-  # Or use a service account on fully headless boxes:
-  # export OP_SERVICE_ACCOUNT_TOKEN='ops_...'   # vault access must include pikvm items
-
-  # Confirm PiKVM items are visible
-  op item list | grep -i pikvm
-
-  # Confirm tailnet peers
   tailscale status | grep -i pikvm
-
-  # Bootstrap config now (writes ~/.config/pikvm/config.json)
   pikvm hosts sync
 
-── Manual fallback (offline / no op) ──
-
-  mkdir -p ~/.config/pikvm
-  # copy config.json from another machine, or create by hand — see: pikvm help
-
 Discover log: %s`,
-		bootstrapSummaryLine(), opHint, DiscoverLogPath())
+		bootstrapSummaryLine(), tokenHint, DiscoverLogPath())
+}
+
+func configDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "j4y")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".config", "j4y")
+	}
+	return filepath.Join(home, ".config", "j4y")
 }
 
 func bootstrapSummaryLine() string {

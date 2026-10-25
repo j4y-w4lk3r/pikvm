@@ -123,10 +123,9 @@ func pikvmNumber(name string) (int, bool) {
 }
 
 // Load populates the package-level vars. On every launch it tries to rebuild
-// hosts from 1Password (pikvm1, pikvm2, … Login items) + online tailnet
+// hosts from OpenBao (secret/pikvm/pikvm1, …) + online tailnet
 // peers, writes ~/.config/pikvm/config.json, and appends discover.log.
-// Falls back to config.json or .env when op/tailscale is unavailable
-// (set PIKVM_SKIP_OP=1 to force fallback).
+// Falls back to config.json or .env when OpenBao or tailscale is unavailable.
 func Load() error {
 	searched = searched[:0]
 	Hosts = nil

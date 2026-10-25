@@ -919,7 +919,7 @@ Machine workflows (build on profiles — port can be linear/'2.3'/profile-name):
 Multi-host federation (~/.config/pikvm/config.json schema v2):
   pikvm hosts                        List every configured PiKVM (= 'hosts list')
   pikvm hosts show [name]            Connection details for one host (omit name = active)
-  pikvm hosts sync                   Refresh from 1Password + tailscale, rewrite config.json
+  pikvm hosts sync                   Refresh from OpenBao + tailscale, rewrite config.json
   pikvm hosts log [N]                Show last N lines of ~/.config/pikvm/discover.log
   pikvm --host <name> <command>      Run any command against a specific host
   pikvm ssh pikvm2:vault             Cross-host SSH shorthand

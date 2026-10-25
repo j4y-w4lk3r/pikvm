@@ -3,14 +3,14 @@ package config
 import (
 	"testing"
 
-	"pikvm/internal/onepassword"
+	"pikvm/internal/openbao"
 	"pikvm/internal/tailscale"
 )
 
 func TestMergeBootstrapOnline(t *testing.T) {
-	creds := []onepassword.HostCreds{
-		{Name: "pikvm1", User: "j4y", Pass: "a", Vault: "lab"},
-		{Name: "pikvm2", User: "j4y", Pass: "b", Vault: "lab"},
+	creds := []openbao.HostCreds{
+		{Name: "pikvm1", User: "j4y", Pass: "a"},
+		{Name: "pikvm2", User: "j4y", Pass: "b"},
 	}
 	peers := []tailscale.PiKVMPeer{
 		{ConfigName: "pikvm1", Hostname: "j4ypikvm0", IPv4: "100.64.0.2", Online: true},
@@ -27,7 +27,7 @@ func TestMergeBootstrapOnline(t *testing.T) {
 }
 
 func TestMergeBootstrapOfflineUsesCache(t *testing.T) {
-	creds := []onepassword.HostCreds{{Name: "pikvm1", User: "j4y", Pass: "a", Vault: "lab"}}
+	creds := []openbao.HostCreds{{Name: "pikvm1", User: "j4y", Pass: "a"}}
 	existing := map[string]HostConfig{
 		"pikvm1": {Host: "100.64.0.2", TailscaleName: "j4ypikvm0", User: "old", Pass: "old"},
 	}

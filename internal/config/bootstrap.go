@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"pikvm/internal/onepassword"
+	"pikvm/internal/openbao"
 	"pikvm/internal/tailscale"
 )
 
@@ -32,16 +32,10 @@ var LastDiscoverSummary struct {
 	Error   string
 }
 
-var bootstrapFromOP = defaultBootstrapFromOP
+var bootstrapFromOP = defaultBootstrapFromBao
 
-func defaultBootstrapFromOP() (BootstrapResult, error) {
-	if os.Getenv("PIKVM_SKIP_OP") == "1" {
-		return BootstrapResult{}, fmt.Errorf("1password bootstrap disabled (PIKVM_SKIP_OP=1)")
-	}
-	if !onepassword.Available() {
-		return BootstrapResult{}, fmt.Errorf("op CLI not found in PATH")
-	}
-	creds, err := onepassword.ListPiKVMHosts()
+func defaultBootstrapFromBao() (BootstrapResult, error) {
+	creds, err := openbao.ListPiKVMHosts()
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -53,13 +47,13 @@ func defaultBootstrapFromOP() (BootstrapResult, error) {
 	return mergeBootstrap(creds, peers, loadExistingHostsSnapshot()), nil
 }
 
-// BootstrapResult is the output of a 1Password + tailscale bootstrap pass.
+// BootstrapResult is the output of an OpenBao + tailscale bootstrap pass.
 type BootstrapResult struct {
 	Hosts   map[string]HostConfig
 	Entries []DiscoverEntry
 }
 
-func mergeBootstrap(creds []onepassword.HostCreds, peers []tailscale.PiKVMPeer, existing map[string]HostConfig) BootstrapResult {
+func mergeBootstrap(creds []openbao.HostCreds, peers []tailscale.PiKVMPeer, existing map[string]HostConfig) BootstrapResult {
 	peerByName := make(map[string]tailscale.PiKVMPeer, len(peers))
 	for _, p := range peers {
 		peerByName[p.ConfigName] = p
@@ -72,7 +66,7 @@ func mergeBootstrap(creds []onepassword.HostCreds, peers []tailscale.PiKVMPeer, 
 		entry := DiscoverEntry{
 			Name:   c.Name,
 			User:   c.User,
-			Vault:  c.Vault,
+			Vault:  "openbao",
 			Status: "ok",
 		}
 		p, ok := peerByName[c.Name]
@@ -147,8 +141,8 @@ func loadExistingHostsSnapshot() map[string]HostConfig {
 	return out
 }
 
-// RefreshFromOnePassword rebuilds hosts from 1Password + tailscale and
-// rewrites config.json. Called from Load() and `pikvm hosts sync`.
+// RefreshFromOnePassword rebuilds hosts from OpenBao + tailscale and
+// rewrites config.json. The name stays so existing callers keep working.
 func RefreshFromOnePassword() error {
 	return tryBootstrapFromOnePassword()
 }
@@ -156,7 +150,7 @@ func RefreshFromOnePassword() error {
 func tryBootstrapFromOnePassword() error {
 	res, err := bootstrapFromOP()
 	LastDiscoverSummary.At = time.Now()
-	LastDiscoverSummary.Source = "1password+tailscale"
+	LastDiscoverSummary.Source = "openbao+tailscale"
 	LastDiscoverSummary.Error = ""
 	LastDiscoverSummary.Entries = res.Entries
 
@@ -166,7 +160,7 @@ func tryBootstrapFromOnePassword() error {
 		return err
 	}
 	if len(res.Hosts) == 0 {
-		err = fmt.Errorf("1password bootstrap found no usable hosts")
+		err = fmt.Errorf("OpenBao bootstrap found no usable hosts")
 		LastDiscoverSummary.Error = err.Error()
 		writeDiscoverLog(LastDiscoverSummary)
 		return err
