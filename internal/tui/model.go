@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pikvm/internal/api"
+	"pikvm/internal/preview"
 	"pikvm/internal/scripts"
 	"pikvm/internal/state"
 )
@@ -104,6 +105,19 @@ type Model struct {
 	firstSwitchSeen  bool
 	firstMsdSeen     bool
 	firstClientsSeen bool
+
+	// Snapshots, tours and the in-TUI preview (snap.go).
+	snapBusy       bool
+	tour           *tourRun
+	tourStarting   bool
+	tourNaming     bool
+	tourNameBuf    string
+	quitArmed      bool // q pressed once while a tour runs
+	previewMode    preview.Mode
+	preview        *preview.Image
+	previewCaption string
+	previewHidden  bool
+	previewSeq     int
 }
 
 // InitialModel builds the starting TUI model without touching the network.
@@ -126,6 +140,7 @@ func InitialModel() Model {
 		hddLeds:        []bool{false},
 		state:          state.Load(),
 		viewCache:      &viewCache{},
+		previewMode:    preview.Detect(),
 	}
 }
 

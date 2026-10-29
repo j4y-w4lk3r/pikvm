@@ -52,6 +52,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	tui.Version = version
 	p := tea.NewProgram(tui.InitialModel(), tea.WithAltScreen())
 	api.StartWebSocket(ctx, p)
 	api.StartInfoPoller(ctx, p)

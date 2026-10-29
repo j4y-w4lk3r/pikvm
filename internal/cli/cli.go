@@ -241,6 +241,8 @@ func Run() {
 		cliSession(jsonMode, args[1:])
 	case "snapshot":
 		cliSnapshot(jsonMode, args[1:])
+	case "tour":
+		cliTour(jsonMode, args[1:])
 	case "mouse":
 		cliMouse(jsonMode, args[1:])
 	case "on", "off", "click", "long", "reset-long":
@@ -872,6 +874,12 @@ Power / reset (port = linear int '5', ext.port '2.3', OR profile name 'j4yn0'):
 
   pikvm snapshot [port] [--out FILE] Capture one JPEG from HDMI
   pikvm snapshot watch [port] [--dir DIR] [--interval SEC]  Continuous screenshots
+  pikvm tour [name] [--note TEXT] [--port N] [--min-change F]
+                                     One screenshot per new screen while you click
+                                     through the web UI (e.g. a BIOS); Ctrl+C ends.
+                                     ~/Pictures/pikvm/<host>/tours/<name>/ with
+                                     contact-sheet.jpg, index.html, tour.json
+  pikvm tour list                    Tours saved for the active host
   pikvm reset click [port]           Reset button short press
   pikvm reset long  [port]           Reset button long press
 

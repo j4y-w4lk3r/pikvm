@@ -44,7 +44,9 @@ Control your PiKVM ATX power management with a beautiful TUI built with [Bubble 
 ✅ **All Actions** - Power on/off, short/long press, reset  
 ✅ **Custom Scripts** - Automated sequences (e.g., boot to BIOS with F7 spam)  
 ✅ **Keyboard Control** - Send keys via PiKVM HID  
-✅ **Real-time Refresh** - Press 'r' to re-fetch switch state from PiKVM
+✅ **Real-time Refresh** - Press 'r' to re-fetch switch state from PiKVM  
+✅ **Screenshots + preview** - `s` saves a screenshot and shows it right in the TUI (real image in kitty / Ghostty, also inside tmux)  
+✅ **Tour mode** - `S` saves one screenshot per screen while you click through a BIOS in the web UI, then builds a contact sheet
 
 ---
 
@@ -297,6 +299,37 @@ The selected item is shown in **bold pastel green text (#9bf09d)** - no boxes, n
 - **Live refresh** - Press `r` to re-fetch the switch state
 - **Color feedback** - Success (green), warnings (orange), errors (red)
 - **Custom Scripts** - Automated multi-step sequences with keyboard input
+
+### Screenshots and tours
+
+| Key | What it does |
+|-----|--------------|
+| `s` | Save a screenshot to `~/Pictures/pikvm/<host>/snaps/<date>/NN.jpg` and preview it |
+| `S` | Start a tour (asks for a name, e.g. `bios-1605`) / stop the running tour |
+| `s` during a tour | Capture the current screen into the tour now |
+| `v` | Hide / show the preview |
+
+**Tour mode** is for documenting a BIOS (or any setup screens) before you change it. Start a tour, then click through the pages in the PiKVM web UI. Once a second the tool grabs a frame; it saves one only when the screen has settled and looks different from everything saved so far. Moving the highlight bar or going back to a page you already have does not add a picture.
+
+Stopping the tour writes, into `~/Pictures/pikvm/<host>/tours/<name>/`:
+
+- `001.jpg`, `002.jpg`, … — one per screen (manual captures are marked)
+- `contact-sheet.jpg` — all screens as numbered thumbnails
+- `index.html` — every screen full size, for a browser
+- `tour.json` — host, port, note, start/end time, pikvm and kvmd version, and the change value of every frame
+
+Typical use: a `bios-1605` tour before a firmware update and a `bios-2503` tour after, to compare what got reset.
+
+The same works from the CLI (Ctrl+C finishes):
+
+```bash
+pikvm --host pikvm2 tour bios-1605 --note "before BIOS 2503 update"
+pikvm --host pikvm2 tour list
+```
+
+`--min-change 0.06` tunes how different a screen must be (fraction of the image). `PIKVM_PICTURES_DIR` moves the output folder.
+
+**Preview:** kitty and Ghostty show the real image (inside tmux this needs `set -g allow-passthrough on`). Other terminals get a coarse colored-block version. `PIKVM_PREVIEW=kitty|blocks|off` overrides the choice.
 
 ---
 

@@ -37,6 +37,18 @@ func helpSections() []helpSection {
 			},
 		},
 		{
+			title: "Screenshots & tours",
+			lines: []string{
+				"s          Screenshot → ~/Pictures/pikvm/<host>/snaps/<date>/NN.jpg",
+				"S          Start a tour (name it, e.g. bios-1605) / stop it",
+				"           Tour: one screenshot per new screen while you click",
+				"           through the PiKVM web UI; contact sheet + index.html",
+				"           + tour.json at the end. s during a tour = capture now",
+				"v          Show / hide the preview of the last screenshot",
+				"PIKVM_PREVIEW=kitty|blocks|off overrides preview detection",
+			},
+		},
+		{
 			title: "Grid view",
 			lines: []string{
 				"arrows/hjkl  Move between port cells",

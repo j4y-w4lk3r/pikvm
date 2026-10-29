@@ -35,6 +35,8 @@ func (m Model) renderContent() string {
 		return successStyle.Render("\n\uf00c Goodbye!\n\n")
 	case m.showHelp:
 		return m.renderHelpView()
+	case m.tourNaming:
+		return m.renderTourNamePrompt()
 	case m.gridView:
 		return m.renderGridView()
 	case m.selectingBIOSKey:
@@ -284,7 +286,7 @@ func (m Model) renderMain() string {
 		left.WriteString("  " + rendered + "\n")
 	}
 
-	scriptsBlock := m.renderScriptsBlock(m.useTwoColumns())
+	scriptsBlock := m.renderScriptsBlock(m.useTwoColumns()) + m.renderPreviewBlock()
 
 	var mainBody string
 	if m.useTwoColumns() {
@@ -361,18 +363,18 @@ func (m Model) renderHelpLines() []string {
 	w := m.indentedContentWidth()
 	compact := m.layoutCompact()
 	if w < 72 || compact {
-		line1 := "?:Help  o:Ops  c:Scripts  ESC  r  q"
+		line1 := "?:Help  o:Ops  c:Scripts  s:Snap  S:Tour  ESC  r  q"
 		if !m.directATX {
-			line1 = "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  ESC  r  q"
+			line1 = "?:Help  e:Ext  p:Port  o:Ops  c:Scripts  g:Grid  s:Snap  S:Tour  ESC  r  q"
 		}
 		if multiHostEnabled() {
 			line1 = "h:Host  " + line1
 		}
 		return wrapStyledText(line1, w, helpStyle)
 	}
-	helpKeys := "?: Help  o: Ops  c: Scripts  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+	helpKeys := "?: Help  o: Ops  c: Scripts  s: Snap  S: Tour  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
 	if !m.directATX {
-		helpKeys = "?: Help  e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
+		helpKeys = "?: Help  e: Extender  p: Port  o: Ops  c: Scripts  g: Grid  s: Snap  S: Tour  1-9/Enter  ESC: back  r: Reconnect  q: Quit"
 	}
 	if multiHostEnabled() {
 		helpKeys = "h: Host  " + helpKeys
@@ -405,6 +407,9 @@ func (m Model) renderStatusBarLines() []string {
 
 func (m Model) statusBarParts() []string {
 	var parts []string
+	if t := m.tourStatusPart(); t != "" {
+		parts = append(parts, t)
+	}
 
 	// Status bar's identity chunk: prefer the friendly host name (config
 	// schema v2) over the raw IP, so users see "lab" / "garage" instead
@@ -536,6 +541,13 @@ func (m Model) viewKey() string {
 	fmt.Fprintf(&b, "%q %q %q %d %d %.0f ",
 		m.info.Platform, m.info.KvmdVersion, m.info.Hostname, m.info.UptimeTotal, m.info.CPUPercent, m.info.CPUTempC)
 	fmt.Fprintf(&b, "%q %s %s %s ", m.result, config.Host, config.HostName, config.User)
+	fmt.Fprintf(&b, "%t %t %q %t %q %t ", m.snapBusy, m.tourNaming, m.tourNameBuf, m.previewHidden, m.previewCaption, m.tourStarting)
+	if m.tour != nil {
+		fmt.Fprintf(&b, "tour=%s:%d ", m.tour.name, m.tour.saved)
+	}
+	if m.preview != nil {
+		fmt.Fprintf(&b, "pv=%d:%d:%d:%d ", m.preview.ID, m.preview.Cols, m.preview.Rows, len(m.preview.Lines))
+	}
 	writeBools(&b, m.videoLinks)
 	writeBools(&b, m.usbLinks)
 	writeBools(&b, m.powerLeds)

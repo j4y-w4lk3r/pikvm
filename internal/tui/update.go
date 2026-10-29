@@ -83,6 +83,9 @@ func scriptCmd(run func() string) tea.Cmd {
 // Update is Bubble Tea's reducer. We dispatch on message type (WS / info /
 // key events) and return a new model + an optional Cmd.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m2, cmd, ok := m.updateSnap(msg); ok {
+		return m2, cmd
+	}
 	switch msg := msg.(type) {
 
 	// ---- Live PiKVM events from /api/ws (idea #1) --------------------------
@@ -304,6 +307,14 @@ func (m *Model) applyLiveSwitch(sw api.SwitchState) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	if m.tourNaming {
+		return m.handleTourNameKey(msg)
+	}
+	if m2, cmd, ok := m.handleSnapKey(key); ok {
+		m2.quitArmed = false
+		return m2, cmd
+	}
+
 	if m.showHelp {
 		switch key {
 		case "esc", "?":
@@ -314,6 +325,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "ctrl+c", "q":
+		// A running tour finalizes (contact sheet, index.html) on S.
+		// Quitting skips that, so ask once.
+		if m.tour != nil && !m.quitArmed && key == "q" {
+			m.quitArmed = true
+			m.result = "\uf071 Tour " + m.tour.name + " is running. Press S to finish it, or q again to quit (frames are kept)."
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
 

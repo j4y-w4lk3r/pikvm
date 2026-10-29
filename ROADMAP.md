@@ -56,6 +56,13 @@ Mosaic of every port across all extenders showing `power_state · video_link · 
 
 ### 8. `[ ]` Snapshot thumbnails inline
 `GET /api/streamer/snapshot?port=N` returns a JPEG. Render each port's snapshot at ~96×54 inside its grid cell using `chafa` (sixel / iTerm2 protocol) or a Go terminal-image library. Refresh every 5 s. A real PiKVM dashboard in the terminal — no browser required.
+**Building blocks now exist** (#28): `internal/preview` draws images in the TUI (kitty placeholders, half-block fallback) and `api.SnapshotStream` grabs frames cheaply. What is left is per-port grabbing in the grid.
+
+### 28. `[x]` Snap key + in-TUI preview
+`s` saves a screenshot to `~/Pictures/pikvm/<host>/snaps/<date>/NN.jpg` and shows it in the TUI. Kitty and Ghostty get the real image via kitty's Unicode placeholders (works inside tmux with `allow-passthrough`); other terminals get a half-block rendering. `v` hides/shows the preview; `PIKVM_PREVIEW=kitty|blocks|off` overrides detection.
+
+### 29. `[x]` Tour mode — one screenshot per screen
+`S` in the TUI (or `pikvm tour <name>` on the CLI) polls the stream once a second while you click through a BIOS or installer in the PiKVM web UI. A frame is saved when the screen has settled and differs from every saved frame in area (≥6% of cells) **and** spread (≥9 of 36 rows), so moving the highlight bar or revisiting a page adds nothing. `s` during a tour forces a capture. Stopping writes `contact-sheet.jpg`, `index.html` and `tour.json` (host, port, note, pikvm + kvmd version, change value per frame) to `~/Pictures/pikvm/<host>/tours/<name>/`. Typical use: `bios-1605` before a firmware update, `bios-2503` after.
 
 ---
 
@@ -165,6 +172,15 @@ Periodically feed snapshots to a vision model with a prompt like *"What screen i
 ### 24. `[ ]` AI macro replay (idea 14 + idea 22)
 Take a recorded session (idea 14). On replay, the AI watches the live screen and adapts the macro to small UI shifts ("the timezone picker is two pages further this version") instead of failing on a pixel mismatch. Result: macros that survive Ubuntu installer redesigns.
 
+### 30. `[ ]` Tour diff — "what did the firmware update change?"
+`pikvm tour diff bios-1605 bios-2503`: match frames between two tours (fingerprint similarity + page title), read each page's settings (tesseract OCR first, a vision model as the accurate path) into `name = value` pairs, and print what changed: "Resizable BAR: Enabled → Disabled", "Q-Fan curve differs". Store the extracted settings in `tour.json` so later diffs are free.
+
+### 31. `[ ]` Auto-tour — the tool walks the BIOS itself
+Instead of the user clicking, the tool sends **navigation keys only** (arrows, Tab, Enter on submenus, Esc back) through PiKVM HID and lets tour mode (#29) capture every page. Safety rules come first, because a wrong key in a BIOS changes a setting: an allow-list of keys, never Enter on a value field, never F10/F9/Del inside setup, a hard stop if the "Save & Exit" dialog or any changed-value marker appears, and a dry-run that only screenshots the current page. Per-vendor maps (ASUS Advanced Mode tabs, AMI generic) keep it predictable.
+
+### 32. `[ ]` AI-driven auto-tour on crui
+Run #31 headless on **crui** (Arch server on the tailnet, already has `pikvm-bin`): a loop that grabs a frame, asks a vision model "which screen is this, which item opens the next unvisited submenu, which key gets there?", sends that key, and lets tour mode capture. crui has no GPU, so the model is an API (Claude vision) or a small remote GPU box; prompts and every decision are logged next to the frames in `tour.json` for review. Same safety allow-list as #31 — the AI can only choose navigation keys. Builds on #22 (AI BIOS pilot) and #30 (diff): the end state is "auto-tour before and after a BIOS update, then show me the diff" with no hands on the keyboard.
+
 ### 23. `[ ]` Multi-machine simultaneous control
 Tile multiple PiKVM streams (across extenders or across hosts from idea 25) into one window. Keyboard focus follows `[1]/[2]/...`. Type the same command into N machines at once with a "broadcast" toggle. Useful for fleet operations like "run `apt upgrade` everywhere".
 
@@ -189,12 +205,12 @@ These aren't features but should be addressed continuously:
 ```
 Phase 1: 1, 2, 3, 4              ✅ DONE
 Phase 2: 5, 6, 9, 10, 27         ✅ DONE
-Phase 3: 7, 8                    ✅ 7 DONE · 8 deferred
+Phase 3: 7, 8, 28, 29            ✅ 7, 28, 29 DONE · 8 deferred
 Phase 4: 16, 17, 18              ✅ DONE (also: AUR + .deb + .rpm + .pkg.tar.zst, GoReleaser CI, Homebrew tap)
 Phase 5: 11, 25, 15              ✅ 11 DONE · 25 DONE (TUI picker deferred) · 15 next
 Phase 6: 12, 14, 20              ✅ 20 DONE · 12, 14 next
 Phase 7: 26, 19                  scheduling + vault auto-pull
-Phase 8: 13, 22, 24, 23, 21      AI + web (long horizon)
+Phase 8: 13, 22, 30, 31, 32, 24, 23, 21   AI + web (long horizon)
 ```
 
 Released so far:
