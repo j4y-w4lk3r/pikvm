@@ -11,13 +11,18 @@
 //	{
 //	  "schema_version": 2,
 //	  "hosts": {
-//	    "pikvm1": {"tailscale_name":"j4ypikvm0","host":"100.64.0.2","user":"admin","pass":"..."},
-//	    "pikvm2": {"tailscale_name":"pikvm2","host":"100.64.0.7","user":"admin","pass":"..."}
+//	    "pikvm1": {"tailscale_name":"j4ypikvm0","host":"100.64.0.2","user":"admin"},
+//	    "pikvm2": {"tailscale_name":"pikvm2","host":"100.64.0.7","user":"admin"}
 //	  },
 //	  "TAILSCALE_AUTH_KEY": "...",   // shared across hosts
 //	  "UBUNTU_PASSWORD":     "..."
 //	  "recordings_dir": "/mnt/nas/pikvm-recordings"  // optional MP4 clips dir
 //	}
+//
+// Passwords are not stored: when a host has no "pass", it is read from
+// OpenBao (secret/pikvm/<name>) when the host is used, and kept in memory
+// only. PIKVM_PASS overrides it. An old file that still has "pass" keeps
+// working; `pikvm hosts sync` rewrites it without.
 //
 // The legacy single-host schema (v1, with PIKVM_HOST/USER/PASS at top
 // level) and the .env fallback are still accepted: Load() converts them
@@ -38,6 +43,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"pikvm/internal/openbao"
 )
 
 // HostConfig is one PiKVM. Multiple of these live in a config.json under
@@ -46,7 +53,7 @@ import (
 type HostConfig struct {
 	Host          string `json:"host"`
 	User          string `json:"user"`
-	Pass          string `json:"pass"`
+	Pass          string `json:"pass,omitempty"` // legacy; normally empty, read from OpenBao at run time
 	TailscaleName string `json:"tailscale_name,omitempty"`
 }
 
@@ -201,6 +208,18 @@ func UseHost(name string) error {
 		return fmt.Errorf("no host named %q (configured: %s)",
 			name, strings.Join(HostNames(), ", "))
 	}
+	if h.Pass == "" {
+		if env := os.Getenv("PIKVM_PASS"); env != "" {
+			h.Pass = env
+		} else {
+			_, pass, err := openbao.ReadHost(name)
+			if err != nil {
+				return fmt.Errorf("%s: no password in config (not stored any more) and OpenBao failed: %w", name, err)
+			}
+			h.Pass = pass
+		}
+		Hosts[name] = h // memory only
+	}
 	HostName = name
 	Host = h.Host
 	User = h.User
@@ -296,8 +315,8 @@ func loadJSON() error {
 		}
 		Hosts = raw.Hosts
 		for name, h := range Hosts {
-			if h.Host == "" || h.User == "" || h.Pass == "" {
-				return fmt.Errorf("%s: host %q missing host/user/pass", path, name)
+			if h.Host == "" || h.User == "" {
+				return fmt.Errorf("%s: host %q missing host/user", path, name)
 			}
 		}
 	case raw.PIKVMHost != "":

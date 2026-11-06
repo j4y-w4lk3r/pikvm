@@ -110,10 +110,9 @@ func persistHostsToConfig() error {
 	hostsOut := make(map[string]interface{}, len(Hosts))
 	for _, name := range HostNames() {
 		h := Hosts[name]
-		entry := map[string]interface{}{
+		entry := map[string]interface{}{ // no "pass": read from OpenBao at run time, never stored
 			"host": h.Host,
 			"user": h.User,
-			"pass": h.Pass,
 		}
 		if h.TailscaleName != "" {
 			entry["tailscale_name"] = h.TailscaleName

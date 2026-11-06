@@ -55,6 +55,20 @@ func ListPiKVMHosts() ([]HostCreds, error) {
 	return out, nil
 }
 
+// ReadHost reads one pikvmN login (secret/pikvm/<name>) at run time. The tool
+// keeps it in memory only: config.json no longer stores PiKVM passwords.
+func ReadHost(name string) (user, pass string, err error) {
+	addr, err := address()
+	if err != nil {
+		return "", "", err
+	}
+	tok, err := token()
+	if err != nil {
+		return "", "", err
+	}
+	return readItem(addr, tok, name)
+}
+
 func address() (string, error) {
 	if v := strings.TrimSpace(os.Getenv("PIKVM_BAO_ADDR")); v != "" {
 		return strings.TrimRight(v, "/"), nil
